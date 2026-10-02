@@ -10,6 +10,14 @@
 # building for a pre-Ampere arch would produce a binary that runs and is wrong about its own performance, which is
 # the worst of both outcomes.
 cmake_minimum_required(VERSION 3.24)
+# The compiler probe that project() runs compiles a test program with the DEBUG flags; the MSVC default
+# (/Zi + /RTC1) asks cl.exe to bring up c1xx.dll with debug records, which some process monitors refuse
+# outright (D8050: "failed to get command line into debug records").  The probe needs no debug info, and
+# these builds are Release anyway; set BEFORE project() so the probe sees them.
+if(WIN32)
+  set(CMAKE_C_FLAGS_DEBUG "-MDd" CACHE STRING "")
+  set(CMAKE_CXX_FLAGS_DEBUG "-MDd" CACHE STRING "")
+endif()
 project(strata VERSION 0.1.62 LANGUAGES CXX)
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/strata_geometry.cmake)   # -DSTRATA_GEOMETRY=<name>: the model shape the kernels are compiled for (default flash_next, no flag added)
 # The build is cut by backend (cleanup 5.4): each file below only DEFINES macros (strata_<part>()), which run here, in this scope, at the place their
