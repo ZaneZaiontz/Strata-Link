@@ -431,6 +431,7 @@ def drop_history_reasoning(messages):
 
 
 QUEUE_BEAT_S = 10.0         # a request waiting for the single turn sends a keep-alive this often (#1619)
+PREFILL_BEAT_S = 5.0   # a real (empty) chunk this often while a prompt is read, for clients that ignore SSE comments
 
 
 # #4271: a streaming client that stops reading (a hung process, a network that dropped) leaves the thread that writes to
@@ -6654,6 +6655,7 @@ def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel
     finished = set()                               # ... and the ones whose final tool_call came (#211)
     answered_done = False                          # the run's own end (its "done" event) arrived
     born = getattr(svc.engine, "gen", None)        # the engine process this request is on (read again with every event: a start inside the run is its own)
+    beat = time.monotonic()
     for kind, x in run if run is not None else svc.run(ids, thinking, tools, max_new, req, cancel, force=force, declared_only=True):
         born = getattr(svc.engine, "gen", born)
         if kind == "ping":
@@ -6662,7 +6664,15 @@ def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel
             pp = prompt_progress(svc) if want_progress else None
             if pp is not None:
                 yield from first()
-            yield None if pp is None else {**chunk({}), "prompt_progress": pp}
+                yield {**chunk({}), "prompt_progress": pp}
+            elif time.monotonic() - beat >= PREFILL_BEAT_S:
+                # A client that resets its idle timer on data events - not on SSE comments - sees silence for as long
+                # as a long prompt takes to read (a 45K-token read is 34 s here, a 190K one minutes); an empty delta
+                # is a real event it can count, and every OpenAI client ignores it.
+                beat = time.monotonic()
+                yield chunk({})
+            else:
+                yield None                         # the SSE comment between two beats, as before
         elif kind == "mcp":
             yield from first()
             c = chunk({})
@@ -6725,6 +6735,13 @@ def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel
         raise lost
 
 
+def _empty_delta(chunk) -> bool:
+    """An OpenAI chunk that says nothing: no content, no role, no tool call, no finish, no MCP or progress field."""
+    choices = chunk.get("choices")
+    return (isinstance(choices, list) and len(choices) == 1 and choices[0].get("delta") == {}
+            and choices[0].get("finish_reason") is None and "strata_mcp" not in chunk and "prompt_progress" not in chunk)
+
+
 def structured_chunks(chunks, validator):
     """Buffer structured streams so a client never receives unvalidated content.  A turn that calls a tool is not the
     final answer: from its first call on, what was held goes out as it is and the rest streams unchecked, as
@@ -6734,6 +6751,13 @@ def structured_chunks(chunks, validator):
     try:
         for chunk in chunks:
             if buffered is None:
+                yield chunk
+                continue
+            if chunk is not None and _empty_delta(chunk):
+                # openai_chunks' beat while a long prompt is read (PREFILL_BEAT_S): it carries nothing to validate, and
+                # a client that counts events (not SSE comments) needs it now - buffered, it reached the client only
+                # after the answer, so the read was silent to that client
+                heartbeat = time.monotonic()
                 yield chunk
                 continue
             progress = chunk is not None and "prompt_progress" in chunk
@@ -8362,11 +8386,20 @@ def make_handler(svc: Service):
                 return self._json(200, anthropic_collect(events))
             self._sse()
             try:
+                last = time.monotonic()
                 for item in events:
                     if item is None:
-                        self.wfile.write(b": keep-alive\n\n")
+                        if time.monotonic() - last >= PREFILL_BEAT_S:
+                            # Anthropic's own ping event, not just the comment: a client's idle timer counts the
+                            # events it parses, and a long prompt read is otherwise minutes of silence (#1619's hole,
+                            # in this dialect)
+                            last = time.monotonic()
+                            self.wfile.write(b'event: ping\ndata: {"type": "ping"}\n\n')
+                        else:
+                            self.wfile.write(b": keep-alive\n\n")
                     else:
                         name, e = item
+                        last = time.monotonic()
                         self.wfile.write(f"event: {name}\n".encode() + b"data: " +
                                          json.dumps(e, ensure_ascii=False).encode() + b"\n\n")
                     self.wfile.flush()
