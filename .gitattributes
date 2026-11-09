@@ -31,3 +31,6 @@ serve/web/vendor/** -text
 third_party/strata-ggml/** text eol=lf
 # vcpkg overlay ports keep vcpkg's own bytes (its repository: * -text; the patches apply byte for byte)
 .github/vcpkg-ports/** -text
+
+# chat templates are read and hashed byte for byte (the served prompt, tools/test_qwen4_intake): LF wherever the repository is cloned
+*.jinja text eol=lf
