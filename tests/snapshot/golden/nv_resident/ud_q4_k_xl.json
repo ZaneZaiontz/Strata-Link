@@ -63,7 +63,8 @@
     "lib_dirs": [],
     "port": 8080,
     "env": {
-     "STRATA_ROUTE_TAIL_SKIP": "0"
+     "STRATA_ROUTE_TAIL_SKIP": "0",
+     "STRATA_VERIFY_DEFER_CPU": "0"
     },
     "vision": {
      "exe": "<ROOT>/engine/strata-vision",
@@ -105,7 +106,8 @@
      "700"
     ],
     "env_set": {
-     "STRATA_ROUTE_TAIL_SKIP": "0"
+     "STRATA_ROUTE_TAIL_SKIP": "0",
+     "STRATA_VERIFY_DEFER_CPU": "0"
     },
     "notes": [
      "[strata] Drafting: MTP (the DFlash2 drafter isn't downloaded yet)"

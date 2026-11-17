@@ -33480,6 +33480,166 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_REMOTE_CKPT_DROP",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "src/program/generate.cpp",
+     "line": 15406,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "off",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/remote-stage/CHECKPOINTS.md:209",
+    "docs/remote-stage/CHECKPOINTS.md:259",
+    "docs/remote-stage/CHECKPOINTS.md:288",
+    "docs/remote-stage/CHECKPOINTS.md:325",
+    "docs/remote-stage/CHECKPOINTS.md:353",
+    "docs/remote-stage/CHECKPOINTS.md:389"
+   ],
+   "first_commit": "af2727218f",
+   "first_date": "2026-10-16",
+   "since": null,
+   "last_commit": "af2727218f",
+   "last_date": "2026-10-16",
+   "status": "research",
+   "owner": "program",
+   "note": "[checked] Test switch on a remote-stage worker: =1 empties its checkpoint store before a restore, so the main process falls back to reading the prompt from token 0 (src/program/generate.cpp:15406); the fallback test in docs/remote-stage/CHECKPOINTS.md:209.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_REMOTE_CONNECT_S",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "src/program/generate.cpp",
+     "line": 14857,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": "180",
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/REMOTE_STAGE.md:299",
+    "docs/REMOTE_STAGE.md:311",
+    "docs/REMOTE_STAGE.md:740",
+    "docs/REMOTE_STAGE.md:758",
+    "docs/REMOTE_STAGE.md:759",
+    "docs/remote-stage/ENGINEERING.md:101",
+    "docs/remote-stage/ENGINEERING.md:121",
+    "docs/remote-stage/ENGINEERING.md:1074",
+    "docs/remote-stage/ENGINEERING.md:1095"
+   ],
+   "first_commit": "37e676423a",
+   "first_date": "2026-10-16",
+   "since": null,
+   "last_commit": "37e676423a",
+   "last_date": "2026-10-16",
+   "status": "default",
+   "owner": "program",
+   "note": "[checked] Remote stage, main process: seconds it keeps trying to connect to the worker, every 2 s, at start and after a lost link (180 when unset; 0: one try) (src/program/generate.cpp:14857); documented in docs/REMOTE_STAGE.md:299.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_REMOTE_PARK_DROP",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "src/program/generate.cpp",
+     "line": 15484,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "off",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/remote-stage/PARKING.md:226",
+    "docs/remote-stage/PARKING.md:303"
+   ],
+   "first_commit": "58d096edb1",
+   "first_date": "2026-11-11",
+   "since": null,
+   "last_commit": "58d096edb1",
+   "last_date": "2026-11-11",
+   "status": "research",
+   "owner": "program",
+   "note": "[checked] Test switch on a remote-stage worker: =1 empties its parked conversations before a ParkRestore, so the main process falls back to reading the prompt from token 0 (src/program/generate.cpp:15484); the fallback test in docs/remote-stage/PARKING.md:303.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_REMOTE_ROWS",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "src/program/generate.cpp",
+     "line": 14963,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    },
+    {
+     "file": "src/program/generate.cpp",
+     "line": 14969,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "off",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/remote-stage/ENGINEERING.md:78"
+   ],
+   "first_commit": "ed511908fa",
+   "first_date": "2026-10-16",
+   "since": null,
+   "last_commit": "bbf0997c65",
+   "last_date": "2026-10-16",
+   "status": "opt-in",
+   "owner": "program",
+   "note": "[checked] Remote stage, main process: =bf16 sends the hand-off rows as bf16 (half the bytes, the answers change a little) when the worker has it; unset or fp32 keeps fp32, and a worker ignores its own value (src/program/generate.cpp:14963,14969); opt-in per docs/remote-stage/ENGINEERING.md:78.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_REMOTE_SPIN",
    "backends": [
     "cuda",
@@ -33523,6 +33683,218 @@
    "status": "rollback",
    "owner": "core",
    "note": "[auto] on unless set to 0 (src/core/remote_experts.cpp:87); rollback wording at code; name first appears in v0.1.40.1",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_REMOTE_STALL_AT",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "src/program/generate.cpp",
+     "line": 15159,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": "0",
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/remote-stage/ENGINEERING.md:155",
+    "docs/remote-stage/ENGINEERING.md:156"
+   ],
+   "first_commit": "7ee3be67e7",
+   "first_date": "2026-10-16",
+   "since": null,
+   "last_commit": "7ee3be67e7",
+   "last_date": "2026-10-16",
+   "status": "research",
+   "owner": "program",
+   "note": "[checked] Test hook: a remote-stage worker's Nth window blocks without a heartbeat, to check that the stall watchdog ends the worker (src/program/generate.cpp:15159); docs/remote-stage/ENGINEERING.md:155.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_REMOTE_TAKEOVER_S",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "src/net/stage_link.cpp",
+     "line": 272,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": "30",
+   "engine_sets": [
+    {
+     "file": "src/net/stage_link_test.cpp",
+     "line": 243
+    },
+    {
+     "file": "src/net/stage_link_test.cpp",
+     "line": 245
+    }
+   ],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/REMOTE_STAGE.md:300",
+    "docs/REMOTE_STAGE.md:305",
+    "docs/REMOTE_STAGE.md:308",
+    "docs/REMOTE_STAGE.md:758",
+    "docs/REMOTE_STAGE.md:759",
+    "docs/REMOTE_STAGE.md:760",
+    "docs/remote-stage/ENGINEERING.md:90",
+    "docs/remote-stage/ENGINEERING.md:103",
+    "docs/remote-stage/ENGINEERING.md:134",
+    "docs/remote-stage/ENGINEERING.md:139",
+    "docs/remote-stage/SESSIONS.md:290"
+   ],
+   "first_commit": "37e676423a",
+   "first_date": "2026-10-16",
+   "since": null,
+   "last_commit": "37e676423a",
+   "last_date": "2026-10-16",
+   "status": "default",
+   "owner": "net",
+   "note": "[checked] Remote-stage worker: seconds the served connection must be idle before a new main process may take the worker over (30 when unset; 0: never) (src/net/stage_link.cpp:272); documented in docs/REMOTE_STAGE.md:300.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_REMOTE_TIMEOUT_S",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "src/net/stage_link.cpp",
+     "line": 59,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": "0",
+   "engine_sets": [
+    {
+     "file": "src/net/stage_link_test.cpp",
+     "line": 696
+    },
+    {
+     "file": "src/net/stage_link_test.cpp",
+     "line": 698
+    }
+   ],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/REMOTE_STAGE.md:298",
+    "docs/REMOTE_STAGE.md:299",
+    "docs/REMOTE_STAGE.md:759",
+    "docs/remote-stage/ENGINEERING.md:74",
+    "docs/remote-stage/ENGINEERING.md:123",
+    "docs/remote-stage/ENGINEERING.md:153",
+    "docs/remote-stage/ENGINEERING.md:1078",
+    "docs/remote-stage/ENGINEERING.md:1104",
+    "docs/remote-stage/ENGINEERING.md:1133",
+    "docs/remote-stage/SESSIONS.md:86",
+    "docs/remote-stage/SESSIONS.md:203",
+    "docs/remote-stage/SESSIONS.md:205"
+   ],
+   "first_commit": "37edf07074",
+   "first_date": "2026-10-16",
+   "since": null,
+   "last_commit": "a2e3cc54c2",
+   "last_date": "2026-10-30",
+   "status": "default",
+   "owner": "net",
+   "note": "[checked] Remote stage: seconds a send or receive on the stage link may block before the link counts as dead (300 when unset or not above 0) (src/net/stage_link.cpp:59); documented in docs/REMOTE_STAGE.md:298.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_REMOTE_TIMING",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "src/net/stage_link.cpp",
+     "line": 281,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    },
+    {
+     "file": "src/prefill/prefill.cpp",
+     "line": 6346,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    },
+    {
+     "file": "src/program/generate.cpp",
+     "line": 11901,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    },
+    {
+     "file": "src/program/generate.cpp",
+     "line": 15135,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "off",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [
+    "serve/stages.py",
+    "serve/web/app.js"
+   ],
+   "launch_sets": [
+    {
+     "file": "serve/web/app.js",
+     "line": 526,
+     "value": "1"
+    }
+   ],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/REMOTE_STAGE.md:296",
+    "docs/REMOTE_STAGE.md:336",
+    "docs/REMOTE_STAGE.md:581",
+    "docs/remote-stage/ENGINEERING.md:86",
+    "docs/remote-stage/ENGINEERING.md:289",
+    "docs/remote-stage/ENGINEERING.md:1147"
+   ],
+   "first_commit": "37edf07074",
+   "first_date": "2026-10-16",
+   "since": null,
+   "last_commit": "37edf07074",
+   "last_date": "2026-10-16",
+   "status": "research",
+   "owner": "net",
+   "note": "[checked] Remote-stage timing lines, each prompt chunk and every 64 windows, off unless =1 (src/net/stage_link.cpp:281, src/prefill/prefill.cpp:6346, src/program/generate.cpp:11901,15135); the layer-split tuner and serve/stages.py:602 read the lines; docs/REMOTE_STAGE.md:296.",
    "retire_after": "",
    "retired_in": ""
   },
@@ -38095,6 +38467,130 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_STAGE_POSITIONS",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "src/program/generate.cpp",
+     "line": 17986,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/remote-stage/ENGINEERING.md:240",
+    "docs/remote-stage/ENGINEERING.md:778"
+   ],
+   "first_commit": "c9e9c6d692",
+   "first_date": "2026-10-16",
+   "since": null,
+   "last_commit": "c9e9c6d692",
+   "last_date": "2026-10-16",
+   "status": "research",
+   "owner": "program",
+   "note": "[checked] Test switch: =0 on the main process sends the remote-stage worker no image position table, to show what the positions change; on when unset (src/program/generate.cpp:17986); docs/remote-stage/ENGINEERING.md:240.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_STAGE_TLS",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "src/net/stage_tls.cpp",
+     "line": 58,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [
+    "serve/stages.py",
+    "setup.py"
+   ],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/REMOTE_STAGE.md:152",
+    "docs/REMOTE_STAGE.md:189",
+    "docs/REMOTE_STAGE.md:199",
+    "docs/REMOTE_STAGE.md:211",
+    "docs/REMOTE_STAGE.md:293",
+    "docs/REMOTE_STAGE.md:439",
+    "docs/REMOTE_STAGE.md:572",
+    "docs/REMOTE_STAGE.md:598",
+    "docs/REMOTE_STAGE.md:611",
+    "docs/REMOTE_STAGE.md:726",
+    "docs/REMOTE_STAGE.md:743",
+    "docs/remote-stage/ENGINEERING.md:434",
+    "docs/remote-stage/ENGINEERING.md:443"
+   ],
+   "first_commit": "a2e3cc54c2",
+   "first_date": "2026-10-30",
+   "since": null,
+   "last_commit": "a2e3cc54c2",
+   "last_date": "2026-10-30",
+   "status": "opt-in",
+   "owner": "net",
+   "note": "[checked] Remote stage: this PC's TLS key folder (key.pem, cert.pem, peers/); required on every PC of a remote stage, which stops before the model loads without it (src/net/stage_tls.cpp:58, src/program/generate.cpp:4320); documented in docs/REMOTE_STAGE.md:293.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_STAGE_TOKEN",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "src/program/generate.cpp",
+     "line": 14955,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "off",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/REMOTE_STAGE.md:295",
+    "docs/REMOTE_STAGE.md:706",
+    "docs/remote-stage/ENGINEERING.md:434",
+    "docs/remote-stage/ENGINEERING.md:1049"
+   ],
+   "first_commit": "37edf07074",
+   "first_date": "2026-10-16",
+   "since": null,
+   "last_commit": "a2e3cc54c2",
+   "last_date": "2026-10-30",
+   "status": "retire-candidate",
+   "owner": "program",
+   "note": "[checked] No longer used since v0.1.55-link.1, when the TLS certificates in STRATA_STAGE_TLS replaced the shared token: read only to print that it is ignored (src/program/generate.cpp:14955); docs/REMOTE_STAGE.md:295 lists it as no longer used.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_STAGE_TRIM",
    "backends": [
     "cuda-hip",
@@ -40502,6 +40998,113 @@
    "status": "research",
    "owner": "core",
    "note": "[auto] diagnostic / trace / measurement switch by name or by code, not documented for users",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_VERIFY_DEFER_CPU",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "src/core/verify.cpp",
+     "line": 1009,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [
+    "setup.py"
+   ],
+   "launch_sets": [
+    {
+     "file": "setup.py",
+     "line": 4383,
+     "value": "\"0\""
+    }
+   ],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/DETAILS.md:1215",
+    "docs/DETAILS.md:1218",
+    "docs/DETAILS.md:1225",
+    "docs/DETAILS.md:1253",
+    "docs/DETAILS.md:1254",
+    "docs/DETAILS.md:1257",
+    "docs/DETAILS.md:1265",
+    "docs/DETAILS.md:1273",
+    "docs/DETAILS.md:1276",
+    "docs/DETAILS.md:1293",
+    "docs/DETAILS.md:1296",
+    "docs/DETAILS.md:1297",
+    "docs/DETAILS.md:1302",
+    "docs/DETAILS.md:1304",
+    "docs/DETAILS.md:1319",
+    "docs/DETAILS.md:1320",
+    "docs/DETAILS.md:1321",
+    "README.md:110"
+   ],
+   "first_commit": "14d557ef5b",
+   "first_date": "2026-10-16",
+   "since": null,
+   "last_commit": "e55b9b5c3c",
+   "last_date": "2026-10-23",
+   "status": "rollback",
+   "owner": "core",
+   "note": "[checked] Strata Link default on CUDA builds since v0.1.44.1-link.1: unset is =1, a layer's CPU expert rows join at the next layer's FFN half (+15.2% decode on an RTX 3080, changes the answers); =0 or off gives the exact path back, =check tests the late addition; HIP builds keep it opt-in (src/core/verify.cpp:1009); docs/DETAILS.md:1215. setup.py:4383 sets =0 where it turns the tail skip off.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_VERIFY_DEFER_CPU_BELOW",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "src/core/verify.cpp",
+     "line": 1045,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/DETAILS.md:1225",
+    "docs/DETAILS.md:1231",
+    "docs/DETAILS.md:1258",
+    "docs/DETAILS.md:1267",
+    "docs/DETAILS.md:1268",
+    "docs/DETAILS.md:1276",
+    "docs/DETAILS.md:1286",
+    "docs/DETAILS.md:1288",
+    "docs/DETAILS.md:1289",
+    "docs/DETAILS.md:1303",
+    "docs/DETAILS.md:1304",
+    "docs/DETAILS.md:1320",
+    "docs/remote-stage/ENGINEERING.md:1045"
+   ],
+   "first_commit": "43f14a187a",
+   "first_date": "2026-10-16",
+   "since": null,
+   "last_commit": "513b3329fb",
+   "last_date": "2026-10-16",
+   "status": "default",
+   "owner": "core",
+   "note": "[checked] Routing-weight split for STRATA_VERIFY_DEFER_CPU: CPU rows below w join late, heavier ones on time (0.1 when unset; 1 or more defers every CPU row); read only while deferral is on (src/core/verify.cpp:1045); docs/DETAILS.md:1276.",
    "retire_after": "",
    "retired_in": ""
   },

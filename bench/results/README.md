@@ -4,7 +4,7 @@ Raw results and short reports from measurement runs, one folder per run, named b
 the Strata version, hardware and method of its own day, and none is a statement about a later release. Current numbers are in the
 [docs](../../docs/README.md) and the [README](../../README.md); how to measure is in [BENCHMARK_PROTOCOL.md](../../docs/BENCHMARK_PROTOCOL.md).
 
-This page is built by `python tools/bench_results_index.py` (`--check` fails when a folder is missing from it). 142 folders and 3 loose files, 2185 files in all.
+This page is built by `python tools/bench_results_index.py` (`--check` fails when a folder is missing from it). 143 folders and 3 loose files, 2228 files in all.
 
 
 ## 2026-09
@@ -149,6 +149,7 @@ This page is built by `python tools/bench_results_index.py` (`--check` fails whe
 | [2026-10-10-community-2x-p40-iq3_s](2026-10-10-community-2x-p40-iq3_s/) | 2026-10-10 — community 2× Tesla P40, Qwen3.8-Flash-Next IQ3_S, 131K context | 2 |
 | [2026-10-10-community-rx-9060-xt](2026-10-10-community-rx-9060-xt/) | Community benchmark on RX 9060 XT with IQ2_XS and IQ3_XXS | 70 |
 | [2026-10-10-community-rx-9070](2026-10-10-community-rx-9070/) | Community benchmark on AMD Radeon RX 9070 16 GB (gfx1201), Windows 11, Ryzen 7 5800X3D | 8 |
+| [2026-10-10-remote-stage](2026-10-10-remote-stage/) | Remote stage: two and three PCs (2026-10-09 and 2026-10-10) | 43 |
 | [2026-10-11-community-rtx3090-5600x-arena-async](2026-10-11-community-rtx3090-5600x-arena-async/) | --adapt-async 1 in the arena mode — community report, RTX 3090 + Ryzen 5 5600X (Windows 11) | 7 |
 | [2026-10-11-community-rtx3090-5600x-arena-pin-by-need](2026-10-11-community-rtx3090-5600x-arena-pin-by-need/) | Pin by need (STRATA_PIN_BY_NEED=1) — community report, RTX 3090 + Ryzen 5 5600X (Windows 11) | 8 |
 | [2026-10-11-gfx1100-qsa-scores](2026-10-11-gfx1100-qsa-scores/) | Exact gfx1100 QSA scorer: measured prefill benefit, opt-in only | 7 |
