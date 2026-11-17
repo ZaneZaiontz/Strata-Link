@@ -134,7 +134,7 @@ What has been run, and what has not:
 | **Not supported** | Intel cards (the SYCL engine has no remote stage), a Mac (the Metal engine refuses it at start), DeepSeek V4.1-Flash (its engine, `strata-dsv41`, has no remote stage) |
 
 Setup, the earlier measurements and the limits: [docs/REMOTE_STAGE.md](docs/REMOTE_STAGE.md). Link's own releases:
-[lask3802/Strata-Link](https://github.com/lask3802/Strata-Link/releases).
+[ZaneZaiontz/Strata-Link](https://github.com/ZaneZaiontz/Strata-Link/releases).
 
 ## Install
 
