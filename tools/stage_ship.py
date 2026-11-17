@@ -104,7 +104,7 @@ def gguf_items(model_dir: Path, lo: int, hi: int) -> list[Item]:
     items = []
     for path in sorted(model_dir.glob("*.gguf")):
         g = GGUFFile(path)
-        rs = [[0, g.data_start]]
+        rs = [[0, min(g.data_start, path.stat().st_size)]]
         for t in g.tensors:
             m = re.match(r"blk\.(\d+)\.", t.name)
             if m:

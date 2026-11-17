@@ -1291,6 +1291,16 @@ class AgentTlsTest(unittest.TestCase):
             sn.tls_context(bad, True)
 
 
+class GgufItemsTest(unittest.TestCase):
+    def test_a_header_only_shard_that_is_not_padded(self):
+        """A shard without tensors can end before its aligned data start (Unsloth UD-IQ4_XS-v31, shard 1 of 4): the
+        header's range stops at the file's end, or the shipper reads past it and stops."""
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "m-00001-of-00002.gguf").write_bytes(b"GGUF" + (3).to_bytes(4, "little") + bytes(16))
+            item, = ss.gguf_items(Path(tmp), 0, 48)
+        self.assertEqual(item.ranges, [[0, 24]])
+
+
 class NodePathsTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
