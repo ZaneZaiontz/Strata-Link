@@ -33,7 +33,6 @@ import base64
 import hashlib
 import hmac
 import codecs
-import ctypes
 import json
 import math
 import os
@@ -60,7 +59,7 @@ from urllib.parse import parse_qs, urlsplit
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 sys.path.insert(0, str(ROOT))   # run as a script (run-<model>.bat) as well as a module
-from serve.frontend import (THINK_END, ChatTemplate, Event, OutputParser, anthropic_to_messages, anthropic_tools,  # noqa: E402
+from serve.frontend import (THINK_END, ChatTemplate, Event, OutputParser, parser_for_template, anthropic_to_messages, anthropic_tools,  # noqa: E402
                             forced_call, images_of, literal_tags, mark_think_literals, openai_to_messages, require_messages,
                             tool_choice_of, unmark_think_literals)
 from serve.mcp import McpCancelled, hub_from_config  # noqa: E402
@@ -3956,6 +3955,10 @@ def engine_args(cfg: dict, exe: str | None = None, *, announce: bool = True) -> 
         drafting.remember_note(decision.note)
         if decision.note:
             print(f"[strata] {drafting.line(decision.drafter, decision.note)}", flush=True)
+            hint = drafting.fetch_hint(decision, model_name=cfg.get("model_name"), backend=backend, archs=archs, data_dir=drafting.data_dir_of(args), args=args,
+                                       vram_mib=drafting_vram_mib(cfg, backend, archs))
+            if hint:
+                print(f"[strata] {hint}", flush=True)
         elif decision.flags:
             print(f"[strata] drafting: DFlash2 alone ({' '.join(decision.flags[:2])}, --draft-conf {args[args.index('--draft-conf') + 1] if '--draft-conf' in args else '-'})", flush=True)
     # A card that is short of VRAM for this start (a single request on a small card, or "parallel" 2 or more, every request slot a session of its own) gets work moved off
@@ -4412,21 +4415,11 @@ def deepseek_slot_env(env: dict, cfg: dict) -> None:
         env["STRATA_DS4_SLOT_DIR"] = str(Path(log).parent / "ds4-slots")
 
 
-# 0.2.9: the exact parallel-request stack, on whenever the engine runs batch slots (--batch / "parallel" 2 or more).  Every item
-# was qualified bit-exact against the plain slots (QUAL-PAR: greedy identity at c=1, first-token KL 0): the checkpoint pool and the
-# slot copies keep a request's running state without a stall, and the BATCH_* / QSA_* switches run all slots of a window in one
-# launch.  Together +16% sustained throughput at c=8 on two A6000 and +40..65% on one big card, no solo cost.  An explicit
-# environment variable (or the config's "env") still wins: =0 turns one off.
-PARALLEL_STACK_ENV = {
-    "STRATA_CKPT_POOL": "1", "STRATA_CKPT_POOL_READY": "4", "STRATA_SLOT_CKPT_MOVE": "1", "STRATA_SLOT_COPY_DIRECT": "1",
-    "STRATA_SLOT_COPY_BATCHSYNC": "1", "STRATA_BATCH_GDN_GROUPS": "1", "STRATA_BATCH_ATTN_ROWS": "1",
-    "STRATA_BATCH_SELF_COMMIT": "1", "STRATA_QSA_SLOTS": "1",
-}
 # 0.2.10: the two parts that need the card's free VRAM are the ENGINE's own, never an environment variable of ours: the FP16 weight
 # cache (bit-exact; takes only VRAM beyond 3 GiB kept free) and no loan of cache slots (only when every expert is resident and the
 # prompt path's own buffers fit beside 3 GiB; KL 0.006, QUAL-PAR2).  STRATA_PF_W16_CACHE_MIB=0 and STRATA_AUTO_NOBORROW=0 turn them off.
-# Only where the stack was run alone: Linux CUDA, all nine.  HIP got no measurement without replicas (its only run was inside the
-# replica config), Windows none at all (its host-arena / pinned-memory path differs): nothing there.
+# (The parallel-request stack, the GDN prompt speedups, the Q8_0 hyper-connection read and the fp16 decode windows are the engine's own defaults now:
+# src/core/arch_defaults.cpp, generate.cpp, metal window.cpp.  Nothing here sets them.)
 
 
 def parallel_slots(cfg: dict) -> int:
@@ -4442,99 +4435,9 @@ def parallel_slots(cfg: dict) -> int:
     return n if isinstance(n, int) and not isinstance(n, bool) and n > 1 else 0
 
 
-def parallel_stack_platform() -> bool:
-    """Linux only: the stack was run on Linux CUDA; Windows (own host-arena path) and macOS were not."""
-    return sys.platform.startswith("linux")
-
-
-# Strata Link: upstream 05cd12e7 (engine 0.1.55) made the grouped GDN launch commit a one-row batch window; an engine before it
-# skips that commit when both switches below are on (self-commit skips the commit graph) and decodes wrong.  setup keeps an
-# installed older engine when the new one cannot be had, and a manual CMake build or a copied binary can be older too, so the
-# server checks the binary it will start: BUILD.json "version", else the component manifest, else the engine= line compiled into
-# the binary (engine_component.read_engine_version).  A version nothing can tell is not taken for a new one: the pair stays off.
-# An engine built from this checkout carries engine=0.1.55 in the binary, so it gets the pair with or without a BUILD.json.
-PARALLEL_STACK_PAIR = ("STRATA_BATCH_GDN_GROUPS", "STRATA_BATCH_SELF_COMMIT")
-PARALLEL_STACK_PAIR_MIN_ENGINE = "0.1.55"
-PARALLEL_STACK_UNKNOWN_ENGINE = "unknown"
-
-
-def parallel_stack_engine_skips(cfg: dict, exe: str | None = None) -> str | None:
-    """Why the engine does not get the pair: its version when it is older than PARALLEL_STACK_PAIR_MIN_ENGINE, or
-    PARALLEL_STACK_UNKNOWN_ENGINE; None when it is new enough.  `exe`: the path the launch resolved (engine_exe_path); without it,
-    the same rule on cfg["exe"].  A "component:" reference is expanded before a start (with_component_engine), not here."""
-    if exe is None:
-        named = cfg.get("exe")
-        if isinstance(named, str) and named and not engine_component.is_reference(named):
-            exe = engine_exe_path(cfg)
-    ver = engine_component.read_engine_version(exe) if exe else None
-    if ver is None:
-        return PARALLEL_STACK_UNKNOWN_ENGINE
-    key = tuple(int(x) for x in re.match(r"(\d+)\.(\d+)\.(\d+)", ver).groups())
-    need = tuple(int(x) for x in PARALLEL_STACK_PAIR_MIN_ENGINE.split("."))
-    return ver if key < need else None
-
-
-def parallel_stack_env(env: dict, cfg: dict, exe: str | None = None) -> None:
-    """Switch the exact parallel stack on (setdefault: a value the user or the config set stays) when the config runs batch
-    slots on a CUDA or HIP Qwen engine.  Other engines (DeepSeek, SYCL, Metal) do not read these."""
-    if parallel_slots(cfg) < 2 or (cfg.get("arch") or "") == "deepseek41" or cfg.get("backend") in ("sycl", "metal", "vulkan"):
-        return
-    if not parallel_stack_platform():
-        return
-    if cfg.get("backend") == "hip":
-        return
-    # Strata Link: only an engine known to be 0.1.55 or newer gets the GDN pair; a pair the user set stays, and nothing is read for it
-    skip = None if all(k in env for k in PARALLEL_STACK_PAIR) else parallel_stack_engine_skips(cfg, exe)
-    if skip:
-        if not getattr(parallel_stack_env, "_said", False):
-            parallel_stack_env._said = True
-            what = (f"the engine is {skip}" if skip != PARALLEL_STACK_UNKNOWN_ENGINE else
-                    "the engine's version cannot be read (not from BUILD.json, a component manifest or an engine= line in the binary)")
-            print(f"[strata] {what}: an engine before {PARALLEL_STACK_PAIR_MIN_ENGINE} skips the GDN commit of a one-row batch "
-                  "window when STRATA_BATCH_GDN_GROUPS and STRATA_BATCH_SELF_COMMIT are both on, so this run leaves those two off "
-                  f"(update the engine; if it is {PARALLEL_STACK_PAIR_MIN_ENGINE} or newer, setting both in the config's env turns "
-                  "them on)", flush=True)
-    for k, v in PARALLEL_STACK_ENV.items():
-        if skip and k in PARALLEL_STACK_PAIR:
-            continue
-        env.setdefault(k, v)
-
-
-# 0.2.9: the qualified GDN prompt speedups (QUAL-GDN, Qwen3.8 IQ3_S).  Linux only.
-#   CUDA: STRATA_GDN_TC=1 (the recurrence scan on the tensor cores) + STRATA_GDN_CONVL2=2 (conv, SiLU and q/k norm in one pass):
-#         KL mean 0.0019 / max 0.0125, 61-task suite 55 vs 54, prompt +4.4% at 4K, +5.5% at 16K, +5.7% at 32K (l620).  The engine
-#         gates TC at run time (compute capability 8 or more, one SM per value head, shared memory) and falls back to the old
-#         kernels on anything else, so an older card or a CUDA 12 build simply does not use it.
-#   AMD gfx12 (RDNA4) only: STRATA_GDN_CHUNKED=1 (the chunked recurrence on the matrix cores): KL mean 0.0025, suite 55 vs 56,
-#         +3.5% at 4K, +5.5% at 16K (R9700).  The same variable also turns the gfx11 path on in the engine and only gfx12 was
-#         qualified, so it is set only when every card the engine will see is gfx12.
-# Other engines (Qwen3.6, DeepSeek), SYCL, Metal, Vulkan, Windows: nothing.  An explicit variable (or the config's env) wins.
-GDN_STACK_CUDA = {"STRATA_GDN_TC": "1", "STRATA_GDN_CONVL2": "2"}
-GDN_STACK_GFX12 = {"STRATA_GDN_CHUNKED": "1"}
-
-
-def gdn_stack_env(env: dict, cfg: dict, archs: dict | None = None) -> None:
-    if not parallel_stack_platform():                                   # Linux only (same rule as the parallel stack)
-        return
-    if (cfg.get("arch") or "qwen4exp") != "qwen4exp" or cfg.get("backend") in ("sycl", "metal", "vulkan"):
-        return                                                          # only the model the numbers are from
-    if cfg.get("backend") != "hip":
-        for k, v in GDN_STACK_CUDA.items():
-            env.setdefault(k, v)
-        return
-    ar = archs if archs is not None else hip_gpu_archs()
-    if not ar:
-        return                                                          # cannot tell the card: leave AMD out
-    want = hip_visible(cfg) or list(ar)
-    seen = [ar.get(i, "") for i in want]
-    if seen and all(a.startswith("gfx12") for a in seen):
-        for k, v in GDN_STACK_GFX12.items():
-            env.setdefault(k, v)
-
-
-def child_env(cfg: dict, *, offline: bool = False, exe: str | None = None) -> dict:
+def child_env(cfg: dict, *, offline: bool = False) -> dict:
     """The engine's environment: the CUDA libraries setup installed (pip's nvidia packages, or the toolkit that
-    compiled it) first on the library search path.  `exe`: the binary the caller will start, when it has resolved it."""
+    compiled it) first on the library search path."""
     env = dict(os.environ)
     if gpu_all_off(cfg):                             # every card Off: the engine sees none (a CPU engine runs; the others say so at start)
         env["CUDA_VISIBLE_DEVICES"] = ""
@@ -4548,8 +4451,6 @@ def child_env(cfg: dict, *, offline: bool = False, exe: str | None = None) -> di
         env[str(k)] = str(v)
     if (cfg.get("arch") or "") == "deepseek41":      # (only this engine reads these; Qwen's environment is untouched)
         deepseek_slot_env(env, cfg)
-    parallel_stack_env(env, cfg, exe)
-    gdn_stack_env(env, cfg)
     # Strict offline reaches children through the environment, because a tool subprocess or a model
     # loader is code this server does not own. Applied last so a profile's own `env` cannot remove
     # the policy by naming the same variable.
@@ -5183,7 +5084,7 @@ class Service:
         self.restore_after_load_from = None               # (or session_on_unload: "the unload", for the log line)
         self.stop_ids = end_token_ids(tokenizer)
         self.family = None                              # the model family ("deepseek41"): set_family() below
-        self.parser_cls = OutputParser                  # reads the model's output (reasoning, content, tool calls)
+        self.parser_cls = parser_for_template(getattr(template, "source", None))   # reads the model's output (reasoning, content, tool calls): by the template's tool-call form
         # #567: a prompt re-encodes only what follows the last special token it shares with a recent prompt (the
         # same ids as a full encode: tools/strata_tokenizer.py PromptEncoder).  Tokenizers without resume points
         # encode in full.
@@ -10165,7 +10066,7 @@ def start_engine_or_fallback(cfg: dict, exe: str, effort_end: list[str] | None, 
         exe2 = _component_exe(cfg2["exe"], cfg2)
     else:
         exe2 = cfg2["exe"] if os.path.isabs(cfg2["exe"]) else os.path.abspath(os.path.join(cfg2.get("cwd") or ".", cfg2["exe"]))
-    env2 = child_env(cfg2, offline=offline, exe=exe2)
+    env2 = child_env(cfg2, offline=offline)
     configure_batch_telemetry_env(env2, cfg2, batch_telemetry)
     effort2 = effort_end_args(cfg2, exe2, tok)
     engine = StrataEngine(exe2, engine_args(cfg2, exe2) + (effort2 or []), cwd=cfg2.get("cwd"), log=cfg2.get("log"), env=env2, lazy=lazy,
@@ -10196,7 +10097,7 @@ def start_replicas(cfg: dict, groups: list[list[int]], exe: str, effort_end: lis
             rc["args"] = list(rc["args"]) + ["--shared-expert-arena", arena]
         try:
             engines[i] = StrataEngine(exe, engine_args(rc, exe) + effort_end, cwd=rc.get("cwd"), log=rc.get("log"),
-                                      env=child_env(rc, offline=offline, exe=exe), lazy=lazy, cpus=cpus[i] if cpus else None,
+                                      env=child_env(rc, offline=offline), lazy=lazy, cpus=cpus[i] if cpus else None,
                                       retry_args=mtp_retry_args(rc, exe, effort_end), retry_vram_args=nodraft_retry_args(rc, exe, effort_end))
         except BaseException as e:        # noqa: BLE001
             errors.append((i, e))
@@ -10264,8 +10165,7 @@ def start_split(cfg: dict, spec: dict, exe: str, effort_end: list[str], lazy: bo
             if role == "prefill":
                 warn_budget_over_ram(engine_args(rc, announce=False) if "args" in rc else [])
             engines[role] = StrataEngine(exe, engine_args(rc, exe) + effort_end, cwd=rc.get("cwd"), log=rc.get("log"),
-                                         env=child_env(rc, offline=offline, exe=exe), lazy=lazy,
-                                         retry_args=mtp_retry_args(rc, exe, effort_end), retry_vram_args=nodraft_retry_args(rc, exe, effort_end))
+                                         env=child_env(rc, offline=offline), lazy=lazy, retry_args=mtp_retry_args(rc, exe, effort_end), retry_vram_args=nodraft_retry_args(rc, exe, effort_end))
     except BaseException:
         for e in engines.values():
             try:
@@ -10503,14 +10403,6 @@ def _component_exe(reference: str, cfg: dict) -> str:
     except engine_component.EngineMissing as e:
         print(f"[strata] {e}", file=sys.stderr, flush=True)
         raise SystemExit(e.exit_code) from None
-
-
-def engine_exe_path(cfg: dict) -> str:
-    """The engine binary a run config starts.  A relative "exe" is the config's cwd's: Windows' CreateProcess resolves
-    "engine/strata.exe" against nothing it is told about (WinError 2), so it is made absolute here."""
-    if engine_component.is_reference(cfg["exe"]):      # "component:strata-engine": the engine package for this PC
-        return _component_exe(cfg["exe"], cfg)
-    return cfg["exe"] if os.path.isabs(cfg["exe"]) else os.path.abspath(os.path.join(cfg.get("cwd") or ".", cfg["exe"]))
 
 
 def undeclared_tool_calls_setting(cfg: dict) -> str:
@@ -10779,7 +10671,10 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
             tcfg = json.loads((tpath / "tokenizer.json").read_text(encoding="utf-8"))
         except (OSError, ValueError):
             pass
-        tok = ST.Tokenizer(tokens, merges, types, tcfg.get("pre") or "qwen35", tcfg.get("special_ids") or None)
+        try:
+            tok = ST.Tokenizer(tokens, merges, types, tcfg.get("pre") or "qwen35", tcfg.get("special_ids") or None)
+        except ST.UnknownPreTokenizer as e:             # a model with its own splitting rule: stop here, never split with another's
+            ap.error(f"the model's tokenizer ({tpath}): {e}")
     if a.engine == "strata" and not cfg.get("arch") and arch_from_tokenizer(None, tcfg.get("pre")):
         cfg["arch"] = arch_from_tokenizer(None, tcfg.get("pre"))
         print(f"[strata] the config names no \"arch\" and this tokenizer is DeepSeek's: serving it as {cfg['arch']} (its end token, DSML tool "
@@ -10804,11 +10699,10 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
         if not cfg:
             ap.error("--engine strata needs --config")
         cfg = apply_vision_defaults(with_component_engine(cfg))
-        exe = engine_exe_path(cfg)                      # once: the engine check below and every start use this path
         vision = None
         # The engine's own environment. It carries the offline policy too: an engine that fetched a
         # missing shard or a plugin would break the promise the flag makes.
-        env = child_env(cfg, offline=a.offline, exe=exe)
+        env = child_env(cfg, offline=a.offline)
         configure_batch_telemetry_env(env, cfg, a.batch_telemetry)
         sampling_defaults = sampling_defaults_from_config(cfg)
         if sampling_defaults:
@@ -10840,6 +10734,12 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
         elif len(gpu_list(cfg)) > 1:
             print(f"[strata] GPUs {gpu_list(cfg)}: the later card(s) serve as the peer expert tier (--peer-device)",
                   flush=True)
+        # a relative "exe" is the config's cwd's: Windows' CreateProcess resolves "engine/strata.exe" against nothing
+        # it is told about (WinError 2), so it is made absolute here
+        if engine_component.is_reference(cfg["exe"]):      # "component:strata-engine": the engine package for this PC
+            exe = _component_exe(cfg["exe"], cfg)
+        else:
+            exe = cfg["exe"] if os.path.isabs(cfg["exe"]) else os.path.abspath(os.path.join(cfg.get("cwd") or ".", cfg["exe"]))
         try:
             silence = engine_silence_s(cfg)             # #481: checked before the (minutes-long) start
             apply_ready_timeout(cfg)
