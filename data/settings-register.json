@@ -33548,8 +33548,8 @@
     "docs/REMOTE_STAGE.md:759",
     "docs/remote-stage/ENGINEERING.md:101",
     "docs/remote-stage/ENGINEERING.md:121",
-    "docs/remote-stage/ENGINEERING.md:1074",
-    "docs/remote-stage/ENGINEERING.md:1095"
+    "docs/remote-stage/ENGINEERING.md:1198",
+    "docs/remote-stage/ENGINEERING.md:1219"
    ],
    "first_commit": "37e676423a",
    "first_date": "2026-10-16",
@@ -33813,9 +33813,9 @@
     "docs/remote-stage/ENGINEERING.md:74",
     "docs/remote-stage/ENGINEERING.md:123",
     "docs/remote-stage/ENGINEERING.md:153",
-    "docs/remote-stage/ENGINEERING.md:1078",
-    "docs/remote-stage/ENGINEERING.md:1104",
-    "docs/remote-stage/ENGINEERING.md:1133",
+    "docs/remote-stage/ENGINEERING.md:1202",
+    "docs/remote-stage/ENGINEERING.md:1228",
+    "docs/remote-stage/ENGINEERING.md:1257",
     "docs/remote-stage/SESSIONS.md:86",
     "docs/remote-stage/SESSIONS.md:203",
     "docs/remote-stage/SESSIONS.md:205"
@@ -33885,7 +33885,7 @@
     "docs/REMOTE_STAGE.md:581",
     "docs/remote-stage/ENGINEERING.md:86",
     "docs/remote-stage/ENGINEERING.md:289",
-    "docs/remote-stage/ENGINEERING.md:1147"
+    "docs/remote-stage/ENGINEERING.md:1271"
    ],
    "first_commit": "37edf07074",
    "first_date": "2026-10-16",
@@ -38539,7 +38539,8 @@
     "docs/REMOTE_STAGE.md:726",
     "docs/REMOTE_STAGE.md:743",
     "docs/remote-stage/ENGINEERING.md:434",
-    "docs/remote-stage/ENGINEERING.md:443"
+    "docs/remote-stage/ENGINEERING.md:443",
+    "docs/remote-stage/ENGINEERING.md:1014"
    ],
    "first_commit": "a2e3cc54c2",
    "first_date": "2026-10-30",
@@ -38577,7 +38578,7 @@
     "docs/REMOTE_STAGE.md:295",
     "docs/REMOTE_STAGE.md:706",
     "docs/remote-stage/ENGINEERING.md:434",
-    "docs/remote-stage/ENGINEERING.md:1049"
+    "docs/remote-stage/ENGINEERING.md:1173"
    ],
    "first_commit": "37edf07074",
    "first_date": "2026-10-16",
@@ -41048,6 +41049,8 @@
     "docs/DETAILS.md:1319",
     "docs/DETAILS.md:1320",
     "docs/DETAILS.md:1321",
+    "docs/remote-stage/ENGINEERING.md:1001",
+    "docs/remote-stage/ENGINEERING.md:1008",
     "README.md:110"
    ],
    "first_commit": "14d557ef5b",
@@ -41095,7 +41098,8 @@
     "docs/DETAILS.md:1303",
     "docs/DETAILS.md:1304",
     "docs/DETAILS.md:1320",
-    "docs/remote-stage/ENGINEERING.md:1045"
+    "docs/remote-stage/ENGINEERING.md:1001",
+    "docs/remote-stage/ENGINEERING.md:1169"
    ],
    "first_commit": "43f14a187a",
    "first_date": "2026-10-16",

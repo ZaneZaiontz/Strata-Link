@@ -952,6 +952,129 @@ Open: `STRATA_PRIMARY_DEVICE` other than 0 on a worker is allowed and not checke
 device 0); a checkpoint taken from `STRATA_CKPT_POOL` that the worker did not store is dropped rather than given back
 (`src/program/generate.cpp:9757-9760`); `clear_marks` (`src/program/generate.cpp:1788`) does not clear `remote_id`.
 
+### After the merge of 0.2.13.1 (2026-11-17)
+
+Upstream v0.2.13.1 (628f7495, engine 0.1.59.1) was merged into the fork's `main` (8250b570: upstream v0.2.12 and the
+Monitor Model card with on-demand Unload / Load, `LINK_VERSION` 0.1.58-link.1); `LINK_VERSION` is now 0.1.59.1-link.1.
+The merge of v0.2.12 was not written up here, so this section covers 0.2.11 to 0.2.13.1. 219 upstream commits were
+new, and five files conflicted (`.gitattributes`, `CMakeLists.txt`, `serve/server.py`,
+`serve/test_parallel.py`, `tools/test_setup_menu.py`). Nothing in the stage link, its TLS, `tools/stage_node.py` or the
+release workflow changed upstream; protocol 8 stands. The parked conversations and session files of the Monitor work
+(`PARKING.md`, `SESSIONS.md`) met no upstream change. What meets a remote stage:
+- **The layer split's spill walk** (0.2.11: trim, KV window, drafter drop, fewer cards) does not run on a remote stage.
+  `--split-device 0` makes `split_same` true (`src/program/generate.cpp:4206`), so `multi_gpu` is false (`4255`), and
+  a worker has no `--layer-split`; every step needs `split_auto`, `multi_gpu` or an in-process stage. K, the dense
+  weights and the drafter stay as asked. `--trim-stage-weights` says "ignored" (`5396`); a remote stage loads only its
+  own layers' dense weights anyway. The single-card walk 0.2.10 already had still applies to each process.
+- **`--prefill auto` on NVIDIA** (0.2.12: a ceiling of 32768 from compute capability 8.0): a remote main is taken back
+  to 8192 by the fork's `(multi_gpu || remote_main)` (`10132`). A worker started by hand with a bare `auto` keeps up to
+  32768, four times the pinned prompt buffers; `tools/stage_node.py` always passes a number, so a worker the agent
+  starts never does. An explicit `--prefill N` is untouched on both.
+- **The auto CPU/PCIe miss share**: a remote main keeps the fixed probe share (the fork's `o.remote_stage.empty()` in
+  the `pcie_frac_auto` line, `5055`). That guard also keeps `pcie_auto_step` from indexing the empty `stages`
+  (`13417`), since `pcie_auto_split_ok()` is on by default for a discrete CUDA card. A worker takes the single-card
+  start value (ceiling 0.95, falling k) and never refines it.
+- **The arena's RAM rules** (#5327): `need` is still priced on the stage's own range (`span + blob`,
+  `src/core/expert_source.cpp:6034`). The new huge-page credit sizes the mapping for the whole model (`6126-6133`), so
+  for a range it can only deny the credit, never grant too much. New on Linux outside a cgroup limit: a shortfall that
+  free memory and droppable file pages cover loads the arena "anyway", with a warning, where 0.1.56 read the experts
+  from the file.
+- **Engine-owned defaults**: `STRATA_GDN_TC=1` and `STRATA_GDN_CONVL2=2` (Linux CUDA, `src/program/generate.cpp:3992`)
+  and `STRATA_HC_Q8=1` (a GGUF with Q8_0 hyper-connection projections, as Unsloth's UD files have, `4681`) are now set
+  by the engine itself, so a worker gets them too; before, it had only its agent's environment, and the 0.2.9 note
+  below that they reach the main process only is out of date. None of them is in the hello (the tail-skip rank is the
+  only such setting the main sends), so each process decides for itself: a Linux pair agrees, a Windows PC on one side
+  would not. The parallel stack needs two or more batch slots, and a remote stage refuses `--batch` (`4297`).
+- **The server's engine gate for the GDN pair** (`read_engine_version`, `parallel_stack_engine_skips`,
+  `ParallelStackEngineGate`) is removed with its tests. Upstream d1121b89 moved those switches into the engine and the
+  server sets none of them now, so there is nothing left to gate.
+- **The compiled geometry** (0.2.13): the worker's `--stage-begin` / `--stage-end` checks still read
+  `ModelGeometry{}.n_layers` (`src/program/generate.cpp:4285`, `4294`). That is right for Flash-Next (48) and would
+  not be for another compiled shape. Left as is.
+- **The run manifest**: a worker goes into `serve_stage` (`15790`) before `manifest::instance().write("ready")`
+  (`15793`), so it writes none; a remote main's manifest says one stage.
+- **The build files**: upstream cut `CMakeLists.txt` up into `cmake/`. The fork's pieces now live in `CMakeLists.txt`
+  (`strata_stage_tls`), `cmake/strata_gpu_engine.cmake` (the `strata` target) and `cmake/backends/cpu.cmake` (the
+  three stage tests, `stage_park_store_test` among them).
+- **The settings register** (0.2.13: `data/settings-register.json`, checked by `tools/settings_register.py --check`
+  and `tools/test_settings_register.py`): Link's thirteen settings (`STRATA_REMOTE_*`, `STRATA_STAGE_*`,
+  `STRATA_VERIFY_DEFER_CPU`, `STRATA_VERIFY_DEFER_CPU_BELOW`) are added to it, and only those. A full rebuild rewrites
+  about 2,500 lines of upstream's entries, because Link's code moves the line numbers they record; the check compares
+  names, not lines. `docs/SETTINGS.md` stays upstream's.
+- **The results index** (0.2.13: `bench/results/README.md`) is rebuilt with `tools/bench_results_index.py`, so it
+  lists `2026-10-10-remote-stage`.
+- **The config snapshots** (0.2.13: `tests/snapshot/golden/`, checked by `tests/snapshot` and `snapshot.yml`): three
+  of the 32 are regenerated, `dgx_spark/ud_iq4_xs_v31`, `nv_resident/ud_iq4_xs_v31` and `nv_resident/ud_q4_k_xl`. They
+  are the ones where setup turns the tail skip off, and there Link's setup also writes `STRATA_VERIFY_DEFER_CPU=0`
+  (`setup.py:4383`); that line, in `env` and `env_set`, is the whole difference.
+- **Upstream's new workflows** `check.yml`, `docs.yml`, `snapshot.yml` and `backends.yml` come with the merge. They
+  have no repository condition, so they run on this fork's pull requests too. `backends.yml` compiles the CUDA and HIP
+  engines from the presets `cuda-compile` and `hip-compile`, which set `STRATA_PORTABLE`, and `strata_stage_tls()`
+  stops a portable configure that finds no static OpenSSL. Their CUDA and HIP containers installed none, so the fork adds
+  `libssl-dev` to those two jobs' "Tools" step (Ubuntu 24.04's static `libcrypto.a` needs nothing more).
+- **Building on Ubuntu 26.04**: the distribution's static `libcrypto.a` wants `libjitterentropy.a`, which is not
+  installed, so the portable engine's link stops with `cannot find -l:libjitterentropy.a`. The builds below used
+  OpenSSL 3.5.9 built static from source, passed as `-D OPENSSL_ROOT_DIR=`.
+
+Two fixes go with the merge, each in its own commit. `tools/stage_ship.py` stopped at once on a model whose first shard
+holds only the header and is not padded out to its data start (Unsloth's UD-IQ4_XS-v31: "...-00001-of-00004.gguf ended
+at 10946618 (it changed while shipping)"); it now takes the header range up to the file's end. And with `truststore`
+installed, `strata_control.tls.install()` called `truststore.inject_into_ssl()`, which swaps `ssl.SSLContext` for
+truststore's class, so the node agent's `PinnedContext` was built on it and skipped its pin check: a server with any
+certificate that chains to a CA the system trusts was accepted as the agent on Linux, and on Windows no agent could be
+reached. `install()` now sets only the default HTTPS context, and a pinned context stays on `ssl`. `setup.py` calls
+`install()` when it is imported, which is why six `test_stage_node.py` tests (`ShipTest`, `AgentTlsTest`) failed when
+`tools/test_setup_download.py` ran before them in one process.
+
+Measured on two PCs that are not the rig above: the main PC (RTX 3080 10 GB, Ryzen 7 3700X, 61 GB DDR4, Ubuntu
+26.04.1, kernel 7.0.0-38) and a worker (RTX 5070 12 GB, Ryzen 7 9800X3D, 30 GB RAM, Ubuntu 26.04), 1 GbE between them,
+mutual TLS 1.3. Model: Unsloth Qwen3.8-Flash-Next UD-IQ4_XS-v31 (four shards), `--layer-split 30`: the main holds
+layers 0-29 (34.63 GiB of experts), the worker layers 30-47 (21.61 GiB), context 262144, the worker started by the node
+agent. The comparison is an earlier merge of v0.2.13.1 onto the fork's line before the Monitor work (the same engine
+apart from the parking and session code, never published), which served on the same two PCs since 2026-11-10.
+
+| | earlier merge (2026-11-11) | this merge (2026-11-17) |
+|---|---|---|
+| standard benchmark, short prompt, decode (median, min-max, n=3) | 64.5 (62.6-64.5) tok/s | 62.0 (60.1-63.9) tok/s |
+| 4K prompt (median, n=3) | 910.0 tok/s | 903.0 tok/s |
+| 16K prompt (median, n=3) | 1711.2 tok/s | 1705.2 tok/s |
+| standard benchmark sanity checks | 12 of 12 | 11 of 12 (one tool-call case gave no structured call) |
+| needle in a haystack, 32K / 128K / 240K x 3 depths | 9/9 | 9/9 |
+| GSM8K sample (25) | 24 | 24 |
+| MMLU-Pro sample (14) | 12 | 11 |
+| IFEval sample (25) | 25 | 25 |
+| tool-call cases (6) | 6 | 6 |
+| lowest available RAM, main | 17.0 GB | 18.8 GB |
+
+The quality rows are one sampled run each, so a difference of one item is run-to-run noise: with seed 1 and the
+drafter on, not one of the 25 GSM8K answers came out word for word the same in the two runs, all but one right in
+both. The failed tool-call case wrote in its reasoning that it had already called the tool and answered without a call;
+its reasoning holds no tool-call markup, so the parser did not drop one. The earlier merge ran while the Python test
+suites used the main PC's CPU at low priority, which is why the main had less RAM free. Neither PC's log has an
+engine error line over the 68-minute run. The quick check after the install read a 30,114-token prompt at 1,817 tok/s
+(the earlier merge: 1,817) and a 126,268-token prompt at 1,962 tok/s, both needles right; a picture across the split
+was read right; and the Monitor's Unload and Load work across the two PCs. The earlier merge was measured
+on 2026-11-11 against 0.1.56-link.1 in the order 0.1.59.1, 0.1.56, 0.1.59.1, and its second run was within half a
+percent of 0.1.56 at every prompt size from 4K to 240K, so the 0.1.59.1 engine is not slower than 0.1.56.
+
+Tests on the merged tree (Linux, in a sandbox with its own process list and an empty HOME, no GPU): the CUDA engine
+(CUDA 13.4, `-DSTRATA_PORTABLE=ON`, static OpenSSL) and `strata-vision` build; `tools/check --only cmake-cpu` passes,
+72 tests with 4 skipping themselves; `host-typecheck`, `host-build` and `snapshot` (37) pass; `docs` passes;
+`pytest tools/test_setup*.py tools/test_make_release.py` with the fork CI's four deselects, 1240 passed, 1 skipped;
+`pytest serve`, 1586 passed, 50 skipped; `pytest tools/test_stage_node.py`, 75 passed, 1 skipped; `pytest
+tests/terminal`, 2994 passed, 59 skipped, 5 failed. The same five fail with the same messages in a plain upstream
+v0.2.13.1 checkout, so they are not the merge's (in `test_bench_term_0213_qatui.py`, `test_drafting.py`,
+`test_tui2_023_old_launcher.py`, `test_update_with_model_ds.py`, and one sigint sub-test in `test_runtime.py`).
+`tools/check --only py-tools`, the step of `check.yml` that runs every `tools/test_*.py` in one process, has 1870
+passed, 9 skipped and 2 failed: the two `test_setup_golden.py` tests the fork's CI deselects. A probe against the
+worker's real agent and a stand-in server with a certificate that is not pinned: `PinnedContext` is built on `ssl`, the
+agent is accepted and the stand-in refused, with and without `install()`.
+
+Not run: Windows builds of this tree, the HIP, SYCL and Metal builds and the containers of `backends.yml`, the release
+workflow and its Rocky Linux 8 toolchain, three PCs or relay workers, a Windows PC as one side of a running link, and
+the DeepSeek family. Apart from the build notes and what the runs above cover, the bullets above come from reading the
+merged code.
+
 ### After the merge of 0.2.10 (2026-11-03)
 
 Upstream v0.2.10 (ffa80d73, engine 0.1.56) was merged into the fork's line (merge branch `merge-0210`, from
@@ -1018,6 +1141,7 @@ merge). Nothing in the stage link, its TLS, `tools/stage_node.py` or the release
   binary, since BUILD.json is read first; and a build of an upstream development commit that is versioned 0.1.55 without
   05cd12e7 (dbdec0bb is one; v0.2.9 and this merge have the fix). The test is `ParallelStackEngineGate` in `serve/test_parallel.py` (it includes
   the kept 0.1.54-link.1 case).
+  The 0.2.13.1 merge removed this gate and its test; see "After the merge of 0.2.13.1" above.
 - **The server's GDN prompt switches** (`STRATA_GDN_TC=1`, `STRATA_GDN_CONVL2=2`; Linux, any Qwen3.8 configuration;
   `serve/server.py` `gdn_stack_env`; the engine takes the tensor-core scan from compute capability 8): they reach the
   main process only. A worker runs with its agent's environment (`tools/stage_node.py:532`), so its layers keep the
