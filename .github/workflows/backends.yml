@@ -71,7 +71,7 @@ jobs:
       - name: Tools
         run: |
           apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git ca-certificates cmake ninja-build ccache
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git ca-certificates cmake ninja-build ccache libssl-dev
           cmake --version | head -1
       - uses: actions/checkout@v4
         with:
@@ -107,7 +107,7 @@ jobs:
       - name: Tools
         run: |
           apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git ca-certificates cmake ninja-build ccache
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git ca-certificates cmake ninja-build ccache libssl-dev
           cmake --version | head -1
       - uses: actions/checkout@v4
         with:
