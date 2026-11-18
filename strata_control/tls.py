@@ -9,6 +9,8 @@ fail with CERTIFICATE_VERIFY_FAILED ("unable to get local issuer certificate") i
 `install()` makes every later HTTPS connection of this process use the operating system's store, through the `truststore` package
 (pure Python, Python 3.10 and newer, pinned in requirements.txt and the runtime locks). Where it is not installed (an older Python, a
 checkout that has not installed the pins yet) the certifi list is used; where that is missing too, Python's own default stays.
+Only the default context changes: a connection that brings its own SSLContext keeps it (the remote stage's pinned certificates,
+tools/stage_node.py); truststore.inject_into_ssl() would swap ssl.SSLContext itself and quietly drop that check.
 Verification is never turned off: a connection that still fails is explained by `explain()`, and nothing here offers to skip the check.
 """
 
@@ -22,13 +24,14 @@ mode: str | None = None
 
 
 def install() -> str:
-    """Use the OS certificate store for every HTTPS connection of this process. Safe to call again and from any thread's start."""
+    """Use the OS certificate store for every HTTPS connection of this process that does not bring its own SSLContext. Safe to
+    call again and from any thread's start."""
     global mode
     if mode is not None:
         return mode
     try:
         import truststore                                  # Python >= 3.10
-        truststore.inject_into_ssl()
+        ssl._create_default_https_context = lambda *a, **k: truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)   # type: ignore[assignment]
         mode = "truststore"
         return mode
     except Exception:                                      # ImportError, or a Python/OS truststore cannot work on

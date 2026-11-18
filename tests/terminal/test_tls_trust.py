@@ -34,12 +34,14 @@ class Install(unittest.TestCase):
         ssl._create_default_https_context = self.context
 
     def test_truststore_is_used_when_present(self):
-        fake = types.SimpleNamespace(calls=0)
+        """truststore's context is the default one; ssl.SSLContext itself stays, so the remote stage's pinned context does too."""
+        fake = types.SimpleNamespace(calls=0, SSLContext=lambda protocol: ("truststore", protocol))
         fake.inject_into_ssl = lambda: setattr(fake, "calls", fake.calls + 1)
         with mock.patch.dict(sys.modules, {"truststore": fake}):
             self.assertEqual(tls.install(), "truststore")
             self.assertEqual(tls.install(), "truststore")          # again: nothing more happens
-        self.assertEqual(fake.calls, 1)
+        self.assertEqual(ssl._create_default_https_context(), ("truststore", ssl.PROTOCOL_TLS_CLIENT))
+        self.assertEqual(fake.calls, 0)
 
     def test_certifi_is_the_fallback_when_truststore_is_missing(self):
         seen = {}

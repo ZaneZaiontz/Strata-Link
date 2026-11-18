@@ -96,8 +96,7 @@ def main():
     B = encode('Unrelated conversation B: name a color.\n' + tail)
     args.output.mkdir(mode=0o700, parents=False, exist_ok=False)
     fixtures(args.output, width)
-    exe = str(args.engine.resolve())   # the binary started; child_env checks this one, not cfg['exe']
-    env = child_env(cfg, exe=exe)
+    env = child_env(cfg)
     env['STRATA_STATE_HASH'] = '1'
     env['STRATA_VERIFY_DEFER_CPU'] = '0'   # the exact path (Strata Link defers by default)
     results = {'engine_info': {}}
@@ -108,7 +107,7 @@ def main():
             command += ['--vision']
         else:
             command += ['--control-vector', str(args.output / 'control.gguf'), '--cvec-mode', args.scenario]
-        engine = StrataEngine(exe, command, cwd=cfg.get('cwd'), log=str(log), env=env)
+        engine = StrataEngine(str(args.engine.resolve()), command, cwd=cfg.get('cwd'), log=str(log), env=env)
         records = []
         results['engine_info'][label] = dict(engine.info)
         def generate(name, ids, image=None, steering=True):

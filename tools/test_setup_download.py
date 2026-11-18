@@ -172,8 +172,11 @@ def run(server, d, pin="auto", name=NAME):
 
 
 def asked(srv):
-    """The pieces (indexes) the server was asked for, one entry per request; the one-byte probe is left out."""
-    return [s // CHUNK for s, e in srv.gets if (s, e) != (0, 0)]
+    """The pieces (indexes) the server was asked for, one entry per request; the one-byte probe is left out, and so is the
+    plain whole-file GET that Python before 3.13 sends when it follows the HEAD's redirect (urllib turns the redirected HEAD into
+    a GET and the download closes it at once); no piece is that big."""
+    whole = (0, len(srv.data) - 1)
+    return [s // CHUNK for s, e in srv.gets if (s, e) not in ((0, 0), whole)]
 
 
 def files(d):
@@ -313,8 +316,10 @@ class Resume(unittest.TestCase):
         # one named all 41 pieces, and the kill fell between the list's removal and the rename of .part
         with small_pieces(), Server(delay=0.05, real_delay=True) as srv, tempfile.TemporaryDirectory() as d:
             env = dict(os.environ, STRATA_SOURCE="huggingface")
-            proc = subprocess.Popen([sys.executable, "-c", runner, srv.url, d], env=env,
-                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            err = Path(d) / "runner.err"                         # kept for the message below: CI saw the sidecar missing once (11-09)
+            with open(err, "wb") as err_file:
+                proc = subprocess.Popen([sys.executable, "-c", runner, srv.url, d], env=env,
+                                        stdout=subprocess.DEVNULL, stderr=err_file)
             try:
                 deadline = time.time() + 60
                 side = Path(d) / (NAME + ".part.chunks")
@@ -326,9 +331,13 @@ class Resume(unittest.TestCase):
                         pass
                     REAL_SLEEP(0.05)
             finally:
+                code = proc.poll()
                 proc.kill()
                 proc.wait()
             self.assertTrue((Path(d) / (NAME + ".part")).exists(), "the download finished before it was killed")
+            self.assertTrue(side.exists(), "no %s after %.1f s; the runner %s; its stderr: %s" % (
+                side.name, time.time() - (deadline - 60), "was still running" if code is None else "ended with %s" % code,
+                err.read_text(errors="replace")[-2000:] or "(empty)"))
             saved = json.loads(side.read_text())
             done = {i for a, b in saved["done"] for i in range(a, b)}
             self.assertGreaterEqual(len(done), 12)
@@ -503,7 +512,9 @@ class Failures(unittest.TestCase):
             self.d = d
             code, out = run(srv, d)
             self.assertIsNone(code, out)
-            self.assertTrue(seen and seen[0] is not None and seen[0] <= 32 * CHUNK, seen)
+            # a preallocated file would already be the full size (len(DATA)) here; what the other connection has written ahead of piece 30 is
+            # thread timing (Windows put it at 34 and 39 pieces), so the check is only that the file has not been made full size
+            self.assertTrue(seen and seen[0] is not None and seen[0] < len(DATA), seen)
 
 
 class Progress(unittest.TestCase):

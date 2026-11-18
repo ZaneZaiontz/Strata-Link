@@ -70,7 +70,7 @@ disk space.
 | ISTA-DAS Coder (half of the experts removed) | 191 GB | about 197 GB |
 
 Runs on NVIDIA RTX 30, 40 and 50 series (Windows and Linux), AMD Radeon AI PRO R9700 (Linux), AMD Ryzen AI Max — Strix Halo
-(Windows), and Apple Silicon Macs with 64 GB or more, text only ([Mac](docs/DEEPSEEK_MAC.md)). Setup downloads the files and the DeepSeek engine, then starts the model.
+(Windows), and Apple Silicon Macs with 64 GB or more ([Mac](docs/DEEPSEEK_MAC.md)). Setup downloads the files and the DeepSeek engine, then starts the model.
 
 ```sh
 strata launch --family deepseek41 --model ist-das-2.00bpw --plan
@@ -134,7 +134,7 @@ What has been run, and what has not:
 | **Not supported** | Intel cards (the SYCL engine has no remote stage), a Mac (the Metal engine refuses it at start), DeepSeek V4.1-Flash (its engine, `strata-dsv41`, has no remote stage) |
 
 Setup, the earlier measurements and the limits: [docs/REMOTE_STAGE.md](docs/REMOTE_STAGE.md). Link's own releases:
-[lask3802/Strata-Link](https://github.com/lask3802/Strata-Link/releases).
+[ZaneZaiontz/Strata-Link](https://github.com/ZaneZaiontz/Strata-Link/releases).
 
 ## Install
 
@@ -147,7 +147,7 @@ Setup, the earlier measurements and the limits: [docs/REMOTE_STAGE.md](docs/REMO
 Install the app, choose a model, and start chatting. There is one installer for each system. On first start the app
 downloads the engine for your graphics card. [Help with the installer](docs/INSTALL.md#the-app).
 
-<sub>Files: `Strata-0.2.9-windows-x64-setup.exe` · `Strata-0.2.9-linux-x86_64.AppImage` · `Strata-0.2.9-macos-arm64.dmg`</sub>
+<sub>Files: `Strata-0.2.13-windows-x64-setup.exe` · `Strata-0.2.13-linux-x86_64.AppImage` · `Strata-0.2.13-macos-arm64.dmg`</sub>
 
 <p align="center">
   <img src="docs/media/app-chat.png" width="900" alt="Strata desktop app with a chat and live code preview side by side">
@@ -246,6 +246,10 @@ Thank you to everyone who supports Strata.
 <a href="https://github.com/macintog"><img src="https://github.com/macintog.png?size=96" width="48" height="48" alt="macintog" title="macintog"></a>
 <a href="https://github.com/bisonbet"><img src="https://github.com/bisonbet.png?size=96" width="48" height="48" alt="bisonbet" title="bisonbet"></a>
 <a href="https://github.com/vizv"><img src="https://github.com/vizv.png?size=96" width="48" height="48" alt="vizv" title="vizv"></a>
+<a href="https://github.com/kod88vn"><img src="https://github.com/kod88vn.png?size=96" width="48" height="48" alt="kod88vn" title="kod88vn"></a>
+<a href="https://github.com/seoulworker"><img src="https://github.com/seoulworker.png?size=96" width="48" height="48" alt="seoulworker" title="seoulworker"></a>
+<a href="https://github.com/jackyini"><img src="https://github.com/jackyini.png?size=96" width="48" height="48" alt="jackyini" title="jackyini"></a>
+<a href="https://github.com/router0mail"><img src="https://github.com/router0mail.png?size=96" width="48" height="48" alt="router0mail" title="router0mail"></a>
 <!-- supporters:end -->
 
 [MIT license](LICENSE) · [Credits and model licenses](docs/HOW_IT_WORKS.md#credits) · [Privacy](docs/SAFETY.md)
