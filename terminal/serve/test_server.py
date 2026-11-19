@@ -7010,7 +7010,7 @@ class OnDemandVision(unittest.TestCase):
         sent = []
 
         class Engine:
-            info = {"expert_slots": slots, "vram_free_mib": 727}
+            info = {"expert_slots": slots, "vram_free_mib": 727, "vram_elastic": 1}
 
             def vram(self, reserve):
                 sent.append(reserve)
@@ -7185,7 +7185,8 @@ class OnDemandVision(unittest.TestCase):
 
     def test_a_failed_start_for_tool_pictures_is_a_503_once(self):
         # upstream's elastic path leaves a tool picture out when its encoder does not start (RuntimeError); an
-        # on-demand encoder's GpuBusy stays a 503, and the other pictures do not lend and start it again
+        # on-demand encoder's GpuBusy stays a 503, and the other pictures do not lend and start it again (one start
+        # is the GPU reader and its CPU fallback, 0.2.16's _start)
         from serve.frontend import anthropic_to_messages
         v, events = self.make(ready=False)
         tok = ByteTokenizer()
@@ -7204,7 +7205,7 @@ class OnDemandVision(unittest.TestCase):
         with self.assertRaises(GpuBusy):
             self.quiet(svc.prepare, m, None, {})
         self.assertEqual(events.count("lend"), 1)
-        self.assertEqual(events.count("start"), 1)
+        self.assertEqual(events.count("start"), 2)
         self.assertEqual(events[-1], "give back")
 
 
