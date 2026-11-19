@@ -5,11 +5,11 @@
     python tools/make_release.py --sums dist         (SHA256.txt again, for every strata-*.zip in dist)
 
 --engine is a CUDA build folder of the engine (cmake --build <it> --target strata, configured with
--DSTRATA_ENABLE_CUDA=ON -DSTRATA_PORTABLE=ON), --vision one of tools/vision (-DSTRATA_VISION_CUDA=ON, portable is its
+-DSTRATA_ENABLE_CUDA=ON -DSTRATA_PORTABLE=ON), --vision one of terminal/tools/vision (-DSTRATA_VISION_CUDA=ON, portable is its
 default).  .github/workflows/release.yml runs it on the builds' files: each folder needs the programs, CMakeCache.txt and
 CMakeFiles/<cmake version>/CMakeCUDACompiler.cmake, nothing else.  The zip (the same layout as upstream's releases):
 
-    strata(.exe), strata_kq.dll / libstrata_kq.so, strata-vision(.exe), BUILD.json
+    strata(.exe), strata-vision(.exe), BUILD.json
 
 BUILD.json is what setup.py reads: "version" (CMakeLists.txt's, the one every MIN_ENGINE comparison reads), "link"
 (LINK_VERSION, Strata Link's release: an installed engine older than the checkout's is replaced), "source": "release",
@@ -121,7 +121,6 @@ def write_sums(out: Path) -> Path:
 def pack(engine: Path, vision: Path, out: Path, platform: str, link: str, commit: str | None) -> Path:
     win = platform == "windows"
     exe, vexe = ("strata.exe", "strata-vision.exe") if win else ("strata", "strata-vision")
-    kq = "strata_kq.dll" if win else "libstrata_kq.so"
     ec, vc = cache_values(engine), cache_values(vision)
     for build, cache, need in ((engine, ec, {"STRATA_ENABLE_CUDA": "ON", "STRATA_PORTABLE": "ON",
                                              "CMAKE_BUILD_TYPE": "Release"}),
@@ -141,12 +140,7 @@ def pack(engine: Path, vision: Path, out: Path, platform: str, link: str, commit
         sys.exit(f"the engine is built with CUDA {cuda}, the image encoder with {vcuda}: one toolkit per zip")
     archs, ptx = cuda_archs(ec.get("CMAKE_CUDA_ARCHITECTURES", ""), engine)
     varchs, _ = cuda_archs(vc.get("CMAKE_CUDA_ARCHITECTURES", ""), vision)
-    files = [program(engine, exe)]
-    if ec.get("STRATA_MMQ_KQUANTS", "ON").upper() != "OFF":   # on by default: the K-quant prompt kernels' library
-        if not (engine / kq).is_file():           # a zip without it would move the user's aside (install_unpacked)
-            sys.exit(f"{engine}: no {kq}, and STRATA_MMQ_KQUANTS is on")
-        files.append(engine / kq)
-    files.append(program(vision, vexe))
+    files = [program(engine, exe), program(vision, vexe)]
     said = re.search(rb"engine=(\d+\.\d+\.\d+(?:\.\d+)?)\n", files[0].read_bytes())
     if not said or said.group(1).decode() != version:   # setup.py's stale_binary() reads the same line
         sys.exit(f"{files[0]} says engine={said.group(1).decode() if said else '?'}, the build folder is {version}: "
@@ -164,7 +158,7 @@ def pack(engine: Path, vision: Path, out: Path, platform: str, link: str, commit
             info.compress_type = zipfile.ZIP_DEFLATED
             if not win:                          # unzip keeps the mode; setup.py chmods the two programs itself
                 info.create_system = 3
-                info.external_attr = (0o100644 if f.name == kq else 0o100755) << 16
+                info.external_attr = 0o100755 << 16
             with open(f, "rb") as src, z.open(info, "w") as dst:
                 while True:
                     b = src.read(16 << 20)

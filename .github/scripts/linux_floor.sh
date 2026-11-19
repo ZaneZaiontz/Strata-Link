@@ -15,7 +15,7 @@ for img in "$@"; do
       grep -m1 PRETTY_NAME /etc/os-release; ldd --version | head -1
       /x/strata --version && /x/strata --families || exit 1
       bad=0
-      for f in /x/strata /x/libstrata_kq.so /x/strata-vision; do
+      for f in /x/strata /x/strata-vision; do
         miss=$(ldd -r "$f" 2>&1 | grep -E "not found|undefined symbol" |
                grep -vE "libcuda\.so\.1 => not found|undefined symbol: cu[A-Z]" || true)
         if [ -z "$miss" ]; then echo "$f: every library and symbol version resolves"; else echo "$f:"; echo "$miss"; bad=1; fi
