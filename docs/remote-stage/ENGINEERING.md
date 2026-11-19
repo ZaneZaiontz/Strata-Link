@@ -988,7 +988,7 @@ agent, shipper and tuner to `terminal/tools/`. What met a remote stage:
 - **The release workflow**: `setup.py` is imported from `terminal/`, the engine and vision build from `engine/` and
   `terminal/tools/vision`, nothing fetches llama.cpp, and `strata_kq` is gone from every build, upload, check and zip.
 
-Measured on two PCs (a main with RTX 3080 + 3070, layers 0-29 and the head; a worker with RTX 5070, layers 30-47; 1 GbE;
+Measured on two PCs (a main with an RTX 3080, layers 0-29 and the head; a worker with RTX 5070, layers 30-47; 1 GbE;
 Unsloth UD-IQ4_XS-v31, `--prefill 5888`), 2026-11-19, the speed runs in the order 0.1.59.1, 0.1.62, 0.1.59.1:
 
 | | 0.1.59.1-f547915 (two runs) | 0.1.62 | 0.1.62, `--prefill 2944` |
