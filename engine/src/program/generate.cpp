@@ -4769,6 +4769,11 @@ int main(int argc, char** argv) {
             why = "it does not support --batch or --peer-device";
         else if (stage_worker && o.pipeline_windows > 0)   // the main process's flag: the worker runs no speculative window
             why = "--pipeline-windows is the main process's (--remote-stage), not a worker's";
+        else if (remote_main && o.pipeline_windows > 0 &&
+                 (std::getenv("STRATA_PIPELINE_HIT_MIN") != nullptr || std::getenv("STRATA_PIPELINE_LAZY_CHAIN") != nullptr ||
+                  std::getenv("STRATA_PIPELINE_LOOKUP_RUN") != nullptr))
+            why = "STRATA_PIPELINE_HIT_MIN, STRATA_PIPELINE_LAZY_CHAIN and STRATA_PIPELINE_LOOKUP_RUN are not tested with "
+                  "--pipeline-windows on a remote stage: unset them";
         // (0.1.44: the head-alias loan is laid out for a single-GPU whole model; the worker has no head)
         else if (o.prefill_head_alias)
             why = "it does not support --prefill-head-alias";
