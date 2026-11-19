@@ -6896,7 +6896,7 @@ class OnDemandVision(unittest.TestCase):
         class Proc:
             def __init__(self, cwd):
                 self.lines = queue.Queue()
-                self.lines.put("READY 1" + chr(10) if ready else "oops" + chr(10))
+                self.lines.put("READY 1" + chr(10) if ready else "ERR oops" + chr(10))
                 self.stdin, self.stdout, self.ended, self.cwd = self, self, False, cwd
 
             def write(self, text):
