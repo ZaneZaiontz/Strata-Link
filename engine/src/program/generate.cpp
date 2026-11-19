@@ -13725,7 +13725,8 @@ int main(int argc, char** argv) {
         strata::core::ConversationSpill spill;
         std::optional<strata::core::SessionFileIdentity> spill_id;
         strata::core::SpillCost spill_cost;   // only conversations whose re-read costs more than the disk round trip go there
-        if (conversations.enabled() && stages.empty() && o.conversation_spill_mib != 0) {
+        if (conversations.enabled() && stages.empty() && !remote_main && !stage_worker &&
+            o.conversation_spill_mib != 0) {
             std::filesystem::path root;
             if (!o.conversation_spill_dir.empty()) {
                 root = o.conversation_spill_dir;
