@@ -66,7 +66,7 @@ Strata Link's main addition to Strata: it can split the model across PCs on your
 does not fit one PC well, but you have a second PC with a graphics card.
 
 - **Each PC loads only its own layers' experts into RAM**, so no PC needs RAM for the whole model. Every PC still needs
-  the model's files; `tools/stage_ship.py` sends a worker only its layers.
+  the model's files; `terminal/tools/stage_ship.py` sends a worker only its layers.
 - **Every card adds memory for the expert cache.** More of the experts are on a GPU, so fewer come from RAM.
 - **Decoding can get faster, or slower.** Below, two PCs decode 16.8% faster than the 2080 Ti alone. A slow worker or
   link can make it slower: a 3080 with a 3070 under WSL2 over 1 GbE decoded short prompts at 36.2 tok/s, against 39.9
@@ -97,7 +97,7 @@ What has been run, and what has not:
 | **Measured by us** | NVIDIA cards only (RTX 2080 Ti, 3080, 3070), on two and three PCs; a Linux main PC; Linux, Windows 11 and WSL2 workers; 1 GbE and 10 GbE links; the Qwen3.8-Flash-Next family only |
 | **Reported by a user** | An RTX 5070 main PC with a Radeon 8060S worker (AMD, HIP), both on Windows, over USB4; SC117's IQ3_XXS; on 0.1.45.3-link.1 ([report](https://github.com/Niko1221/Strata/pull/1748#issuecomment-6332714185)) |
 | **Not run by us** | An AMD main PC, a Windows main PC (one user report above), other models |
-| **Not supported** | Intel cards (the SYCL engine has no remote stage), a Mac (the Metal engine refuses it at start), DeepSeek V4.1-Flash (its engine, `strata-dsv41`, has no remote stage) |
+| **Not supported** | Intel cards (the SYCL engine has no remote stage) and a Mac (the Metal engine refuses it at start) |
 
 Setup, the earlier measurements and the limits: [docs/REMOTE_STAGE.md](docs/REMOTE_STAGE.md). Link's own releases:
 [ZaneZaiontz/Strata-Link](https://github.com/ZaneZaiontz/Strata-Link/releases).
