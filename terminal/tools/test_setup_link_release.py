@@ -146,7 +146,7 @@ class GetPrebuilt(unittest.TestCase):
             data = wrote[-1].read_bytes()
             return len(data), hashlib.sha256(data).hexdigest()
 
-        with mock.patch.object(setup.urllib.request, "urlopen", urlopen), \
+        with mock.patch.object(setup, "_urlopen", urlopen), \
                 mock.patch.object(setup, "download", download), mock.patch.object(setup, "engine_digest", digest):
             yield heads, got
 
@@ -174,7 +174,7 @@ class GetPrebuilt(unittest.TestCase):
         self.assertEqual(eng, self.root / "engine")
         self.assertEqual(got, [setup.PREBUILT_URL + setup.PREBUILT_ASSET])
         self.assertEqual((self.root / "engine" / setup.EXE).read_bytes(), b"new")
-        self.assertIn("No ready-made engine for v", out)
+        self.assertNotIn("could not be reached", out)
 
     def test_a_release_not_newer_than_the_installed_one_is_not_installed(self):
         """The latest release is still the installed Link one (this checkout's is uploading): the installed engine
@@ -199,14 +199,14 @@ class GetPrebuilt(unittest.TestCase):
             heads.append(req.full_url)
             raise urllib.error.HTTPError(req.full_url, 404, "Not Found", {}, None)
 
-        with mock.patch.object(setup.urllib.request, "urlopen", urlopen), \
+        with mock.patch.object(setup, "_urlopen", urlopen), \
                 mock.patch.object(setup, "source_version", lambda: "0.1.44.1"):
             eng, _ = quiet(setup.get_prebuilt_hip, setup.PREBUILT_URL, {"arch": "gfx1100"})
         self.assertIsNone(eng)
         self.assertEqual(heads, [f"https://github.com/Niko1221/Strata/releases/download/v0.1.44.1/{setup.WIN_HIP_ASSET}",
                                  f"https://github.com/Niko1221/Strata/releases/latest/download/{setup.WIN_HIP_ASSET}"])
         heads.clear()
-        with mock.patch.object(setup.urllib.request, "urlopen", urlopen):   # an explicit --prebuilt is still only that
+        with mock.patch.object(setup, "_urlopen", urlopen):   # an explicit --prebuilt is still only that
             quiet(setup.get_prebuilt_hip, "https://mirror.example/x/", {"arch": "gfx1100"})
         self.assertEqual(heads, [f"https://mirror.example/x/{setup.WIN_HIP_ASSET}"])
 
