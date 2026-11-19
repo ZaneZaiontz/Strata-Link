@@ -39,8 +39,9 @@
 namespace strata::net {
 
 inline constexpr uint32_t kStageMagic = 0x4d525453u;   // "STRM"
+// 9: engine 0.1.62, whose prompt chunks and loans differ from 0.1.59's (the same messages)
 // 8: TLS 1.3, both ends' certificates (7: a token in the hello; upstream's PR numbers the same change 5 -> 6)
-inline constexpr uint32_t kStageProtocol = 8;
+inline constexpr uint32_t kStageProtocol = 9;
 /// Conversation checkpoints (docs/remote-stage/CHECKPOINTS.md): the most parts a worker keeps; a main process whose
 /// hello asks for more is refused
 inline constexpr int32_t kStageCkptMax = 64;

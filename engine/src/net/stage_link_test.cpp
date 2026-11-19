@@ -5,7 +5,7 @@
 //
 //   0. the worker's table from what a Positions message carries (stage_positions_fill): the identity, the cells
 //      sent, the cells past them;
-//   1. the hello: an older side (protocol 7) is refused for its protocol, a main process that would have the worker
+//   1. the hello: an older side (protocol 8) is refused for its protocol, a main process that would have the worker
 //      keep more than kStageCkptMax checkpoints is refused, a main process with --vision refuses a worker without it,
 //      a matching one is served;
 //   2. Reset / CkptSave / CkptRestore carry their id, position and keep[] whole (int64 ids beyond 32 bits);
@@ -922,9 +922,9 @@ int main(int argc, char** argv) {
 
     // 1. the hello
     StageHello old_side = hello_of();
-    old_side.protocol = 7;
-    check(!greet(old_side) && contains(err, "the worker refused:") && contains(err, "protocol 7/8"),
-          "a protocol 7 main process (a token, no TLS) is refused for its protocol");
+    old_side.protocol = 8;
+    check(!greet(old_side) && contains(err, "the worker refused:") && contains(err, "protocol 8/9"),
+          "a protocol 8 main process (engine 0.1.59) is refused for its protocol");
     StageHello greedy = hello_of();
     greedy.ckpt_max = kStageCkptMax + 1;
     check(!greet(greedy) && contains(err, "at most 64"),
