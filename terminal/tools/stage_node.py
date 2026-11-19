@@ -81,6 +81,10 @@ every shard's header) loads them as from the whole file - tools/stage_ship.py se
 """
 from __future__ import annotations
 
+import sys
+if sys.platform == "win32":
+    sys.modules["_wmi"] = None
+
 import hashlib
 import json
 import os
@@ -90,7 +94,6 @@ import shutil
 import signal
 import ssl
 import subprocess
-import sys
 import tempfile
 import threading
 import time
