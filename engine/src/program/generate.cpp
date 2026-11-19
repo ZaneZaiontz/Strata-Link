@@ -11530,7 +11530,8 @@ int main(int argc, char** argv) {
     auto fit_case = [&](int64_t chunk, bool small_path) -> strata::prefill::fit_out::ScanCase {
         strata::prefill::fit_out::ScanCase sc;
         sc.auto_chunk = o.prefill_auto && strata::prefill::Prefill::ring_bytes_enabled();
-        sc.one_gpu = stages.empty() && !multi_gpu && !peer.valid() && !o.prefill_head_alias && o.batch <= 1;
+        sc.one_gpu = stages.empty() && !remote_main && !stage_worker && !multi_gpu && !peer.valid() &&
+                     !o.prefill_head_alias && o.batch <= 1;
         sc.tail_loan = tail_loan_on;
         sc.equal_cut = equal_cut_one == strata::prefill::equal_cut::Cut::equal;
         sc.small_path = small_path;
@@ -16141,8 +16142,8 @@ int main(int argc, char** argv) {
             // prompt needs, so a large chunk costs a short prompt nothing
 #if defined(STRATA_PREFILL_FUSED) && !defined(STRATA_PREFILL_MMQ)
             // one GPU: equal chunks (equal_cut_rule.hpp), unless their loan would take more slots than today's cut
-            const bool eq_one_gpu = pf_parts.size() == 1 && stages.empty() && !multi_gpu && !peer.valid() &&
-                                    !o.prefill_head_alias && o.batch <= 1;
+            const bool eq_one_gpu = pf_parts.size() == 1 && stages.empty() && !remote_main && !stage_worker && !multi_gpu &&
+                                    !peer.valid() && !o.prefill_head_alias && o.batch <= 1;
             int64_t want_full = loan_chunk(tokens, planned_chunk(tokens, o.prefill_chunk, pf_plan_chunk, eq_one_gpu));
             // the equal chunk that kEqualMinChunk turned down (equal_cut_rule.hpp declined_equal; 0: none): kept below
             // when today's cut, handed back for it, cannot be lent but the equal cut can (keep_equal)
@@ -16184,8 +16185,8 @@ int main(int argc, char** argv) {
             namespace lr = strata::prefill::loan_rules;
             using strata::prefill::Prefill;
             const int64_t floor_t = Prefill::stream_all_min_tokens();
-            const bool tail_ok = tail_loan_on && pf_parts.size() == 1 && stages.empty() && !multi_gpu && !peer.valid() &&
-                                 !o.prefill_head_alias && o.batch <= 1;
+            const bool tail_ok = tail_loan_on && pf_parts.size() == 1 && stages.empty() && !remote_main && !stage_worker &&
+                                 !multi_gpu && !peer.valid() && !o.prefill_head_alias && o.batch <= 1;
             for (PfPart& p : pf_parts) {
                 if (p.first < 0) continue;
                 if (!p.lent.empty()) {
