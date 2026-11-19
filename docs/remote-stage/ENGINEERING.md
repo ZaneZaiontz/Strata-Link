@@ -952,6 +952,76 @@ Open: `STRATA_PRIMARY_DEVICE` other than 0 on a worker is allowed and not checke
 device 0); a checkpoint taken from `STRATA_CKPT_POOL` that the worker did not store is dropped rather than given back
 (`src/program/generate.cpp:9757-9760`); `clear_marks` (`src/program/generate.cpp:1788`) does not clear `remote_id`.
 
+### After the merge of 0.2.16 (2026-11-19)
+
+Upstream v0.2.16 (engine 0.1.62, 1,671 commits after v0.2.13.1) was merged into `merge-0.2.16`; `LINK_VERSION` is now
+0.1.62-link.1. Upstream moved the whole tree into `app/`, `docs/`, `engine/`, `terminal/` and `tools/`, removed MMQ
+(and with it `strata_kq`), DeepSeek and the llama.cpp download (ggml is vendored in `engine/third_party/strata-ggml`).
+Link's stage link, TLS, park and checkpoint stores moved to `engine/src/net` and `engine/include/strata/net`, the
+agent, shipper and tuner to `terminal/tools/`. What met a remote stage:
+- **The tail loan and equal chunks** (0.2.16's default once MMQ was gone): a request's prompt buffers are laid out with
+  a tail for its last chunk, and one GPU cuts a prompt into equal chunks. Both tested `stages.empty()`, true on a
+  remote main and a worker, so the worker laid out a tail of 0 and refused any short last chunk ("a chunk of 92 tokens
+  below the stream floor does not fit the fused layout's tail of 0 tokens"; a picture prompt hit it on the two PCs).
+  `tail_ok`, `eq_one_gpu` and the scan's `sc.one_gpu` now also need `!remote_main && !stage_worker`, so a remote stage
+  reads prompts as 0.1.59.1 did. Turning the tail loan on for the main alone is left for later.
+- **The conversation cache's SSD tier** (new, on by default): its only split test was `stages.empty()`, so a remote
+  main would have written the main's half of a parked conversation to disk without the worker's. It stays off on a
+  remote stage. On the two PCs below, the worker PC has about 2.2 GiB free with the worker loaded, so the worker
+  declines to keep its half of any park (its RAM floor) and the main skips parking cleanly; the SSD tier never opened.
+- **#5860's pipelined switches** (`STRATA_PIPELINE_HIT_MIN`, `_LAZY_CHAIN`, `_LOOKUP_RUN`, opt-in): they would reach
+  the remote pipelined loop, untested across two PCs. A remote main with `--pipeline-windows` and any of them set stops
+  at start with a message to unset them.
+- **#6075's checkpoint lock**: a restore reads a VRAM slot under the save's lock. Link's split restore read the slots
+  without it; both restores now copy the GDN state through one helper that takes upstream's lock.
+- **The prompt loan Link moved out of the request loop** (`lend`, `refill`, for the worker) takes upstream's new body;
+  `lend_whole` uses the 4-argument `planned_chunk` (the 3-argument one went with MMQ and no longer compiled).
+- **Protocol 9**: the messages did not change, but 0.1.62 and 0.1.59 cut and lend prompts differently, so a mixed pair
+  now stops at the hello: "the two sides differ (protocol 9/8, ...)", checked in both directions on the two PCs.
+- **The prompt chunk on a remote main**: 0.1.62's fused buffers are smaller, so the main no longer halves its
+  5888-token chunk to fit its cache ("prompt chunk 5888 -> 2944 tokens so its buffers fit" on 0.1.59.1). Full chunks
+  read faster per token, but a short prompt then splits into fewer pieces and the two PCs overlap less (below).
+- **Upstream's new checks on Link's files**: the node agent gets the `_wmi` guard (`test_wmi_guard.py`), the
+  spawn-site counts take Link's `after_unload` / `model_control` commands and `engine_starts`
+  (`test_no_debugger_children.py`), Link's setup tests fake `setup._urlopen` (upstream's `netpolicy` wrapper) instead of `urllib.request.urlopen`, and
+  Link's on-demand vision tests allow for 0.2.16's CPU fallback and the `vram_elastic` INFO key.
+- **The release workflow**: `setup.py` is imported from `terminal/`, the engine and vision build from `engine/` and
+  `terminal/tools/vision`, nothing fetches llama.cpp, and `strata_kq` is gone from every build, upload, check and zip.
+
+Measured on two PCs (a main with RTX 3080 + 3070, layers 0-29 and the head; a worker with RTX 5070, layers 30-47; 1 GbE;
+Unsloth UD-IQ4_XS-v31, `--prefill 5888`), 2026-11-19, the speed runs in the order 0.1.59.1, 0.1.62, 0.1.59.1:
+
+| | 0.1.59.1-f547915 (two runs) | 0.1.62 | 0.1.62, `--prefill 2944` |
+|---|---|---|---|
+| decode, short prompt (tok/s) | 63.8 / 64.2 | 59.7 | 65.1 |
+| 4K prompt read (tok/s) | 904 / 902 | 773 | 920 |
+| 16K prompt read (tok/s) | 1708 / 1705 | 1442 | 1748 |
+| 128K needle read (tok/s, n=3) | 1953-1968 | 2333 | 1995-1997 |
+| 240K needle read (tok/s, n=3) | 1870-1881 | 2311-2313 | 1898-1901 |
+
+Decode is the same within noise (the short case's spread is 59-71 on every build). With the default chunk, 0.1.62
+reads long prompts about 20% faster and 4K-16K prompts about 15% slower, since a 4K prompt is one 4088-token chunk
+instead of 2944 + 1144 that the two PCs overlap; with `--prefill 2944` it is at least as fast as 0.1.59.1 everywhere.
+
+Behaviour on the two PCs (0.1.62 on both): pictures across the split right; needles right at 30K, 126K, 128K and 240K;
+a stop sequence mid-answer ends the reply there and the next request answers; a 104K prompt whose client hangs up
+12 s in stops (23,552 tokens read) and the next request answers 2.2 s later; the worker stopped and started again
+under a running main reconnects on the next request ("connected again", the prompt read from token 0); no engine error
+line on either PC. Not run on GPUs: session files (`--stage-session-dir`), Monitor Unload / Load.
+
+Quality on the same two PCs, against 0.1.59.1-f547915's runs (Tier 2 on 0.1.62 is the quick set, so fewer questions):
+
+| | 0.1.59.1-f547915 | 0.1.62 |
+|---|---|---|
+| unity / tools / gsm8k | 7/10, 6/6, 24/25 | 9/10, 6/6, 24/25 |
+| mmlupro / longctx / ifeval | 11/14, 11/12, 25/25 | 12/14, 11/12, 24/25 |
+| BFCL v4 | 164/196 (0.84) | 41/50 (0.82) |
+| OpenAI MRCR | 0.97 (41) | 1.00 (11) |
+| GPQA Diamond | 92/100 (0.92) | 29/30 (0.97) |
+| LiveCodeBench (quick) | 15/15 | 14/15 |
+
+No score moved past what a different sample or one question explains.
+
 ### After the merge of 0.2.13.1 (2026-11-17)
 
 Upstream v0.2.13.1 (628f7495, engine 0.1.59.1) was merged into the fork's `main` (8250b570: upstream v0.2.12 and the
