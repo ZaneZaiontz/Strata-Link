@@ -221,7 +221,7 @@ struct Worker {
                 StageHello peer;
                 std::string e;
                 Client c(cred);
-                if (c.connect(at, bad, peer, e) || contains(e, "the worker refused:")) { where = at; break; }
+                if (c.connect(at, bad, peer, e, 2) || contains(e, "the worker refused:")) { where = at; break; }
                 std::this_thread::sleep_for(std::chrono::milliseconds(20));
             }
             if (where.empty()) stop();
