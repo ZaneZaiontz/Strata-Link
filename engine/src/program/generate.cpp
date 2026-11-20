@@ -17545,7 +17545,7 @@ int main(int argc, char** argv) {
         // and send this request's positions again; the caller then sends its message again.  Nothing of the old
         // connection carries over: the worker zeroes its session at the reset, its checkpoint parts went with the old
         // connection (remote_fresh), and the hello carries the rest (the tail-skip rank, --vision, the chunk).  A link
-        // lost in the middle of a request still ends the engine.
+        // lost in the middle of a request ends that request (remote_survivable).
         auto remote_relink = [&](std::string& e) -> bool {
             if (!strata::net::stage_link_lost(e)) return false;
             const std::string lost = e;
@@ -17571,6 +17571,14 @@ int main(int argc, char** argv) {
                          o.remote_stage.c_str(), lost.c_str());
             std::fflush(stderr);
             return true;
+        };
+        // A link lost in the middle of a request, or the worker's own error, on a serial path (no --pipeline-windows,
+        // no --batch): once the GPU has finished what is still in flight (a prompt chunk's own layers may be) without
+        // a fault, the request ends with the error and the engine stays; the next request connects again and reads
+        // its prompt anew
+        auto remote_survivable = [&](const std::string& e) {
+            return remote_main && !pipe && o.batch == 0 && cudaDeviceSynchronize() == cudaSuccess &&
+                   (strata::net::stage_link_lost(e) || e.rfind("remote stage (worker): ", 0) == 0);
         };
         auto remote_positions = [&](bool table, int64_t cells, std::string& e) -> bool {
             remote_pos_cells = table ? cells : 0;
@@ -19968,12 +19976,12 @@ int main(int argc, char** argv) {
             // another main process took it over) is made again here, before anything is sent or decided: a request
             // that continues the live session sends nothing before its first window, which would find it lost in
             // the middle of the request.  A check with nothing sent; a peer that vanished without a word is not seen.
-            // (A STOP while connecting again ends this request; the link stays closed, so the next one looks again.)
+            // (A failed reconnect, or a STOP meanwhile, ends this request with the engine kept; the link stays closed,
+            // so the next one looks again.)
             if (remote_main && !remote_link.alive(err) && !remote_relink(err)) {
-                std::printf("ERR %s\n", err.c_str());
+                std::printf("INFO remote_stage_kept=1\nERR %s\n", err.c_str());
                 std::fflush(stdout);
-                if (remote_cancelled) continue;
-                return 1;
+                continue;
             }
             if (geni || !mrope_identity) {
                 // positions for every cell this request can reach; the identity again for a text request
@@ -22252,6 +22260,7 @@ int main(int argc, char** argv) {
             ver.set_history(hist_n > 0 ? d_hist : nullptr, hist_n);
             if (pipe) ver_b.set_history(hist_n > 0 ? d_hist : nullptr, hist_n);
             bool cancelled = false;
+            std::string remote_lost;
             tr("prompt start", n - 1);
             // The prompt is read in two parts when it has a turn boundary past `resume`: up to the last <|im_start|>
             // (the conversation so far), a checkpoint there, then the new turn's header.  The next request of the same
@@ -22389,6 +22398,11 @@ int main(int argc, char** argv) {
                 if (!sp_ok) {
                     if (yielded_at < 0 && (batch_fatal || !stop_req.load())) {
                         std::fprintf(stderr, "strata serve: %s\n", err.c_str());
+                        if (remote_survivable(err)) {
+                            remote_lost = err;
+                            cancelled = true;
+                            break;
+                        }
                         std::printf("ERR %s\n", err.c_str());
                         // #224: a CUDA fault (an illegal address) poisons the context for the whole process, and
                         // unwinding the destructors on it could hang until the 60 s watchdog: leave at once
@@ -22409,8 +22423,14 @@ int main(int argc, char** argv) {
                     // checkpoints above: the worker may have dropped what this side still holds)
                     if (!ckpt_why.empty() || remote_main || !checkpoint_failure_is_survivable()) {
                         // a remote stage's link lost in the middle of the request, or the worker's own error: the
-                        // engine ends as on a lost window, with the link's or the worker's text first (the server
-                        // answers it with a 503)
+                        // request ends as on a lost window (remote_survivable), else the engine ends, with the link's
+                        // or the worker's text first (the server answers it with a 503)
+                        if (ckpt_why.size() > 2 && remote_survivable(ckpt_why.substr(2))) {
+                            remote_lost = ckpt_why.substr(2) + " (saving a conversation checkpoint at " +
+                                          std::to_string(to) + " tokens)";
+                            cancelled = true;
+                            break;
+                        }
                         if (ckpt_why.size() > 2 && ckpt_why.compare(2, 12, "remote stage") == 0)
                             std::printf("ERR %s (saving a conversation checkpoint at %lld tokens)\n", ckpt_why.c_str() + 2,
                                         (long long) to);
@@ -23793,6 +23813,11 @@ int main(int argc, char** argv) {
                 exit_if_gpu_fatal("");   // (the test hook counts windows here)
                 if (!ver.run(T, window.data(), p, decode_pool_fn, win_pool_user, outv.data(), err) || drive.d.failed) {
                     exit_if_gpu_fatal(drive.d.failed && drive.d.fail ? drive.d.fail : err);
+                    if (!drive.d.failed && remote_survivable(err)) {
+                        if (aflipped) apply_pending(true);
+                        remote_lost = err;
+                        break;
+                    }
                     std::printf("ERR %s\n", drive.d.failed && drive.d.fail ? drive.d.fail : err.c_str());
                     return 1;
                 }
@@ -23868,6 +23893,10 @@ int main(int argc, char** argv) {
                 if (!ver.commit(a + 1, err)) {
                     exit_if_gpu_fatal(err);
                     if (adapt_thr.joinable()) adapt_thr.join();
+                    if (adapt_ok && remote_survivable(err)) {
+                        remote_lost = err;
+                        break;
+                    }
                     std::printf("ERR %s\n", err.c_str());
                     return 1;
                 }
@@ -24202,7 +24231,8 @@ int main(int argc, char** argv) {
                 // request mounts a checkpoint instead (both sides restore it) or reads from 0
                 if (remote_main && !pl_drain_err.empty()) live_ok = false;
                 if (nf_hit) live_ok = false;   // #879 (the next request's start drops the rest)
-            } else if (!nf_hit && pp_exact && pp_reached > 0 && o.prompt_cache > 0 && req_ckpt &&
+                if (!remote_lost.empty()) live_ok = false;
+            } else if (remote_lost.empty() && !nf_hit && pp_exact && pp_reached > 0 && o.prompt_cache > 0 && req_ckpt &&
                        pp_reached <= (int64_t) cur.size()) {
                 // #1620: stopped between two windows (or before the first token was read): the session is exactly at
                 // pp_reached, so it stays the live conversation - the next request continues from it or parks it.
@@ -24377,16 +24407,23 @@ int main(int argc, char** argv) {
             if (fol != nullptr && fol_rows > 0)
                 std::fprintf(stderr, "strata follow: %lld rows on the forced text, %lld of their picks were the forced token (%.2f%%)\n",
                              (long long) fol_rows, (long long) fol_same, 100.0 * (double) fol_same / (double) fol_rows);
-            if (yielded_at >= 0) std::printf("YIELDED %d %lld\n", yielded_slot, (long long) yielded_at);
-            std::printf("DONE %lld %lld %.1f %.1f %s %lld %lld %lld %lld %lld %lld %lld %.1f %lld %lld%s chunk=%lld "
-                        "experts_streamed=%lld\n",
-                        (long long) produced_n,
-                        (long long) n, prompt_ms, decode_ms, finish, (long long) draft_accepted, (long long) draft_offered,
-                        (long long) resume, (long long) req_hits, (long long) req_look,
-                        (long long) (src.ram_reads() - ram0), (long long) (src.file_reads() - files0),
-                        (double) (src.file_read_bytes() - file_bytes0) / 1e6, (long long) read_n,
-                        (long long) req_offload, chain_txt, (long long) req_chunk,
-                        (long long) (sp.chain_experts_streamed() - streamed0));
+            if (!remote_lost.empty()) {
+                remote_link.close();
+                std::fprintf(stderr, "strata serve: %s: the request ends, the engine stays and the next "
+                                     "request connects again\n", remote_lost.c_str());
+                std::printf("INFO remote_stage_kept=1\nERR %s\n", remote_lost.c_str());
+            } else {
+                if (yielded_at >= 0) std::printf("YIELDED %d %lld\n", yielded_slot, (long long) yielded_at);
+                std::printf("DONE %lld %lld %.1f %.1f %s %lld %lld %lld %lld %lld %lld %lld %.1f %lld %lld%s chunk=%lld "
+                            "experts_streamed=%lld\n",
+                            (long long) produced_n,
+                            (long long) n, prompt_ms, decode_ms, finish, (long long) draft_accepted, (long long) draft_offered,
+                            (long long) resume, (long long) req_hits, (long long) req_look,
+                            (long long) (src.ram_reads() - ram0), (long long) (src.file_reads() - files0),
+                            (double) (src.file_read_bytes() - file_bytes0) / 1e6, (long long) read_n,
+                            (long long) req_offload, chain_txt, (long long) req_chunk,
+                            (long long) (sp.chain_experts_streamed() - streamed0));
+            }
             std::fflush(stdout);
             if (admit_slot >= 0) {   // --batch: BADM <slot> <1 = continues in the batch windows | 0 = done>
                 bool cont = !cancelled && produced_n == 1 && admit_max_new > 1 && std::strcmp(finish, "length") == 0 &&
