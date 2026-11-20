@@ -129,7 +129,14 @@ step), its positions, its reset or its checkpoint restore. Nothing else is per c
 zeroes the worker's session, the hello carries the tail-skip rank, `--vision` and the chunk) but the worker's
 conversation checkpoint parts, which go with the old connection: the main process then drops its live session and
 checkpoints and reads the prompt from token 0 ([CHECKPOINTS.md](CHECKPOINTS.md#after-a-reconnect)). The request's
-positions are sent again.
+positions are sent again. The exception is the same main process coming back to the same worker process: each main
+process puts a number for itself in the hello (`instance`, drawn at its start, never 0, in the old token's spare
+bytes) and lists bit 27 (`kStageCapResume`); a worker (not a relay) lists the bit too and remembers the number of
+the main process it served last. A hello with that same number keeps the worker's checkpoint parts, and the worker
+answers with the number (`stage_resumes`); any other hello (another number, none, an older main process without the
+bit) drops them first (`StageHandlers::new_main`), as a disconnect did before. The main process then drops only its
+live session and resumes from the deepest checkpoint both sides hold. An older peer ignores the bit and the number,
+so mixed versions behave as before, and the protocol number does not change.
 While the name does not resolve, nothing listens or the network does not reach the worker, it tries every 2 s for
 `STRATA_REMOTE_CONNECT_S` (180 s), each try with its own watchdog allowance; a refusal is not tried again. That is
 the whole wait: each try's connect and its hello's reply are polled against what is left of it (a hello waiting in a

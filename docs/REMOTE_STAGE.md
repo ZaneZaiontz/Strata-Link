@@ -319,7 +319,15 @@ start checks the link first, with nothing sent (the worker sends nothing unasked
 something to read), so a request that sends nothing before its first window (one that continues the live session,
 with `--prompt-cache`) finds the loss there too. After a reconnect the worker holds no session and no checkpoint
 part: with `--prompt-cache` that request reads its prompt from token 0, and one line says so
-([remote-stage/CHECKPOINTS.md](remote-stage/CHECKPOINTS.md#after-a-reconnect)). That needs the
+([remote-stage/CHECKPOINTS.md](remote-stage/CHECKPOINTS.md#after-a-reconnect)). The exception is the same worker
+process and the same main process on both sides of the drop (a link that broke, not a process that ended): the
+worker keeps that main process's checkpoint parts, and the request resumes from the deepest checkpoint both hold, so
+only the turns after it are read again. Both PCs need this version for that; with an older one on either side it
+reads from token 0 as before. Measured through a shaping proxy at 15 ms and 20 Mbit/s each way (default rows), the
+link cut for 2 s between the second and third turn of a conversation whose first turn held 12,772 tokens: the third
+turn read 36 tokens in 2.1 s (4.8 s to its answer, the reconnect included); without it, all 12,834 in 231.3 s. A
+worker killed between turns comes back as a new process with nothing kept, and the next turn reads from token 0.
+Without `--prompt-cache` there are no checkpoints, so every turn reads from token 0 anyway. That needs the
 loss seen: a worker process that ended or a link that was reset is seen at once, but when the worker's PC vanished
 without a word a request in the first minute or so (before the keepalive notices) waits for its first reply until
 the link's own timeouts end it: the keepalive, or at most `STRATA_REMOTE_TIMEOUT_S`. A link lost in the middle of a

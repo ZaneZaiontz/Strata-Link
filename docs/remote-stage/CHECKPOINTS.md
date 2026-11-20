@@ -88,9 +88,11 @@ Retention is decided by the main alone; the worker never evicts on its own:
 - The worker prunes to `keep[]` only when the operation succeeds. CkptSave that cannot store (the 64-entry limit after
   pruning, or the host allocation failing) replies `CkptSaveOk a=0` and leaves the store as it was; the main then
   creates no checkpoint and evicts nothing (the chain is as before the cut). The request goes on.
-- The worker clears its store on disconnect (a new main is a new id space). So after the main process connects again
-  (a worker restarted, a take-over; ENGINEERING.md, "Recovery") the worker holds no part and no session: see
-  [After a reconnect](#after-a-reconnect).
+- The worker clears its store when another main process says hello (a new main is a new id space): one with another
+  `instance` number, one without, or one without `kStageCapResume`. A relay, and a worker of 0.1.62 or earlier,
+  clears it on every disconnect. So after the main process connects again (a worker restarted, a take-over;
+  ENGINEERING.md, "Recovery") the worker holds no part and no session, unless it is the same worker process and the
+  same main process: see [After a reconnect](#after-a-reconnect).
 - Ids the main dropped without a message (the non-prefix erase at request start, a from_live request) stay on the
   worker until the next Reset / CkptSave / CkptRestore prunes them: at most one chain's worth.
 
@@ -159,13 +161,14 @@ worker's copy (~55 MB for ~17 GDN layers). The prompt is read in parts at the cu
 
 Memory: the worker holds up to prompt_cache + 1 parts in RAM plus at most one stale chain (~55 MB each for layers
 26-47 of a 48-layer model). The RAM check at hello (As built) counts the prompt_cache + 1 parts, not the stale chain.
+A worker that is not a relay keeps them after its main process went away, until another main process says hello.
 
 ### After a reconnect
 
 A main process connects again when a request's start finds the link lost (ENGINEERING.md, "Recovery"). The worker it
-reaches then is a new process, or the same one on a new connection: its session is zeroed and its store is empty. A
-request that continued the live session or mounted a checkpoint there would run the worker's layers from `resume` on
-an empty session, so:
+reaches then is a new process, or the same one on a new connection: its session is zeroed and its store is empty,
+unless it kept the parts for this main process (below). A request that continued the live session or mounted a
+checkpoint there would run the worker's layers from `resume` on an empty session, so:
 
 - At each request's start, before its positions are sent and before it decides where to resume, the main process
   checks the link with nothing sent (`StageClient::alive`: a poll of 0 ms, then a 1-byte peek). The worker sends
@@ -180,14 +183,24 @@ an empty session, so:
   link was made again, one more says so when there was something to drop (`the worker holds no session or checkpoint
   after connecting again: ...`; on a CkptRestore, `the worker holds no checkpoint after connecting again: ...`); a
   link made again at the Reset of a request that read from token 0 anyway has only the first.
+- The same worker process and the same main process (the worker's hello echoes the main's `instance`,
+  `stage_resumes`): the worker kept its checkpoint parts, so at the request's start the main process drops only its
+  live session and keeps its checkpoints (`the worker kept its checkpoint parts after connecting again: ...`); the
+  resume decision then picks the deepest one that matches the prompt and restores it on both sides, as on any
+  request. The cells below a kept checkpoint are still that conversation's on both sides: a checkpoint in the chain
+  is a prefix of every prompt since it was saved (the others are erased at each request's start), and a request in
+  between wrote only cells from its own resume point on, with the same tokens. An id the worker no longer holds (a
+  `CkptSaveOk` lost with the link) is the missing case: the request reads from token 0. A relay does not keep its
+  parts, so a relay chain behaves as before.
 - A CkptRestore that finds the link lost makes it again and falls back as for a missing id. If connecting again
   fails, or the worker reports an error of its own, the `ERR` line starts with that error (`remote stage: ...`,
   `remote stage (worker): ...`), so the server answers 503, not 400.
 - A CkptSave that finds the link lost, or that the worker fails, is in the middle of a request (after the part's
-  windows): the engine ends as for a lost window, the `ERR` line again starting with the link's or the worker's error.
+  windows): the request ends as for a lost window (the engine stays and closes the link), the `ERR` line again
+  starting with the link's or the worker's error.
 - What the check cannot see: a worker PC that vanished without closing (power, cable) looks alive until TCP
   keepalive notices it (about a minute); a request in that time finds the loss at its first message, as before. A
-  loss between the check and the request's first window is found at that window, and the engine ends. With a
+  loss between the check and the request's first window is found at that window, and that request ends. With a
   relay, the check sees only the main process's own link: a next worker that restarted while the main process was
   idle is found by the relay at the request's first message to it, an error that ends the engine (read from the
   code; relays were not run).
@@ -212,9 +225,14 @@ an empty session, so:
 - Fallback: a worker debug env (STRATA_REMOTE_CKPT_DROP=1: empty the store before a restore) -> the request reads
   from 0 and finishes.
 - Speed: the replay at the served flags; per-turn time to the first token against one GPU.
-- After a reconnect (not run on GPUs yet): the worker restarted, or taken over by another main process, between
-  two turns of a chat; the next turn must read from token 0 (the log lines above) and answer as a run without
-  `--prompt-cache` does.
+- After a reconnect: the worker restarted, or taken over by another main process, between two turns of a chat; the
+  next turn must read from token 0 (the log lines above) and answer as a run without `--prompt-cache` does. Run on
+  the GPUs (two PCs, RTX 3080 main, RTX 5070 worker) for a worker killed between turns: the third turn of a
+  3,187-token chat read from token 0 after the worker was back and gave the same answer. The link cut for 2 s
+  between turns with both processes alive: the third turn restored the checkpoint at the end of the second turn
+  (`checkpoint 2 at 12798 tokens restored on both sides`) and read 36 tokens, with the answer of the run that read
+  all 12,834; with an older build on either PC it read from token 0. Not compared byte for byte (the fixed expert
+  sets below were not set), and the take-over by another main process was not run.
 - Builds: CUDA Linux, MSVC (the Windows worker), HIP; SYCL untouched (it has no remote stage).
 
 ## As built
@@ -268,7 +286,8 @@ an empty session, so:
   `StageClient::alive` on an idle link, after a take-over, after the worker stopped and after bytes no message asked
   for, none of its checks over 100 ms; its handlers are the test's own: the worker's real ones in `generate.cpp` run
   only in the GPU checks) and the explicit-length cases in `conversation_transfer_test`. What `generate.cpp` does
-  after a reconnect (the dropped session and checkpoints, the read from 0) has no unit test: read from the code.
+  after a reconnect (the dropped session and checkpoints, the read from 0, or the kept checkpoints) has no unit test:
+  read from the code. `stage_link_test` covers which hellos keep the worker's parts (section 20).
 
 ## GPU results
 
