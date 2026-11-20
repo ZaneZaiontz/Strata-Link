@@ -264,7 +264,7 @@ LLAMA_CPP_COMMIT = "3cf03257f219afbe7334045ff7c6a06ac68c627d"
 # The repository the release assets and their SHA-256 come from; `engine_digest` reads the API here even
 # when --prebuilt points the download somewhere else, because the hash is only worth having if it comes
 # from somewhere the download does not.
-REPO = "ZaneZaiontz/Strata-Link"
+REPO = "ZaneZaiontz/Strata-Net"
 PREBUILT_URL = f"https://github.com/{REPO}/releases/latest/download/"
 PREBUILT_TAG_URL = f"https://github.com/{REPO}/releases/download/v{{version}}/"
 PREBUILT_ASSET = "strata-windows-x64.zip" if WIN else "strata-linux-x64.zip"
@@ -7891,7 +7891,7 @@ def update_pull(argv: list) -> int | None:
     if repo is None:
         if source_download():
             say("  This copy of Strata was not made with git, so it cannot fetch new files itself. Download the newest one:")
-            say("    https://github.com/ZaneZaiontz/Strata-Link/archive/refs/heads/main.zip")
+            say(f"    https://github.com/{REPO}/archive/refs/heads/main.zip")
             say(f"  unzip it anywhere and run {'START-HERE.bat' if WIN else './setup.sh'} in it: it finds the model files in Strata-data")
             say("  and sets itself up the same way - nothing big is downloaded again.")
             say("  Checking this copy's engine and settings meanwhile ...")

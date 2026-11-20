@@ -101,8 +101,8 @@ What has been run, and what has not:
 | **Not run by us** | An AMD main PC, a Windows main PC (one user report above), other models |
 | **Not supported** | Intel cards (the SYCL engine has no remote stage) and a Mac (the Metal engine refuses it at start) |
 
-Setup, the earlier measurements and the limits: [docs/REMOTE_STAGE.md](docs/REMOTE_STAGE.md). Link's own releases:
-[ZaneZaiontz/Strata-Link](https://github.com/ZaneZaiontz/Strata-Link/releases).
+Setup, the earlier measurements and the limits: [docs/REMOTE_STAGE.md](docs/REMOTE_STAGE.md). This fork's releases:
+[ZaneZaiontz/Strata-Net](https://github.com/ZaneZaiontz/Strata-Net/releases).
 
 ## Install
 
