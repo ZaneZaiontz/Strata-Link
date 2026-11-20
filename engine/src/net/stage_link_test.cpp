@@ -30,8 +30,6 @@
 //   9. STRATA_REMOTE_TAKEOVER_S=0: a new main process waits however long the served one is silent; a connection the
 //      worker accepted while the served one was idle is closed when the served one sends again (and does not take
 //      over at its next idle time); the idle time starts when a slow reply (a relay's) is out, not when it began;
-//      a read waiting for a slow reply is the watchdog's link allowance (core::LinkCall) while under way, within
-//      its limit only;
 //  10. StageClient::alive, the main process's check at a request's start (and a relay's of its next worker): true on
 //      an idle served link (no TLS session tickets come unasked), and it reads nothing (the next reply is in step);
 //      false, as a lost link, once the worker's end closed it (a take-over by another main process, the worker
@@ -1313,7 +1311,6 @@ int main(int argc, char** argv) {
     a.close();
     wk6.stop();
 
-    // the watchdog's allowance for the link: a read waiting for the slow reply is under way, within its limit only
     Worker wk6w;
     if (!wk6w.start(slow, buf)) {
         std::printf("stage_link_test: no loopback port to listen on\n");
