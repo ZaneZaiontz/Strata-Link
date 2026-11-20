@@ -1,4 +1,4 @@
-# Strata Link's ready-made engines: the zips setup.py downloads (tools/make_release.py), built here instead of by hand.
+# Strata-Net's ready-made engines: the zips setup.py downloads (tools/make_release.py), built here instead of by hand.
 #
 #   a tag v<LINK_VERSION> (v0.1.45-link.1):   build every zip, then a DRAFT release with them and SHA256.txt; the
 #                                             owner reads it over and publishes it
@@ -60,7 +60,7 @@ jobs:
             echo "::error::the tag is $GITHUB_REF_NAME, LINK_VERSION says v$link"; exit 1
           fi
           echo "link=$link" >> "$GITHUB_OUTPUT"
-          echo "Strata Link $link (engine $engine)"
+          echo "Strata-Net $link (engine $engine)"
 
   windows:
     name: windows ${{ matrix.zip }} ${{ matrix.part }}
@@ -359,6 +359,6 @@ jobs:
           if [ -n "$have" ]; then
             echo "::error::$GITHUB_REF_NAME already has a release ($have): delete it to make the draft again"; exit 1
           fi
-          printf 'Strata Link %s, built by the release workflow from %s (run %s).\n\nSHA256.txt: the SHA-256 of each zip.\n' \
+          printf 'Strata-Net %s, built by the release workflow from %s (run %s).\n\nSHA256.txt: the SHA-256 of each zip.\n' \
             "$LINK" "$GITHUB_SHA" "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" > notes.md
-          gh release create "$GITHUB_REF_NAME" dist/* --draft --verify-tag --title "Strata Link $LINK" --notes-file notes.md
+          gh release create "$GITHUB_REF_NAME" dist/* --draft --verify-tag --title "Strata-Net $LINK" --notes-file notes.md

@@ -5917,7 +5917,7 @@ def get_prebuilt(url_base, gpu, vision, updating=False, toolkit=13) -> Path | No
         # a DGX Spark: the release has no flat engine zip for it (and the CUDA 12 engine is x86). Upstream (0.2.7.1) takes the
         # linux-aarch64 package of its signed feed here; Strata Link does not (as for the flat zips below: that engine is upstream's,
         # without Link's engine changes), so the caller compiles it, as before 0.2.7.1 (spark/build_engine.sh does the same by hand)
-        warn(f"Strata Link has no ready-made engine for {sysinfo.machine()}" + ("" if updating else ": compiling it here, once"))
+        warn(f"Strata-Net has no ready-made engine for {sysinfo.machine()}" + ("" if updating else ": compiling it here, once"))
         return None
     if not url_base:
         return None
@@ -11063,7 +11063,7 @@ def link_accepts(eng: Path, meta: dict, base: str, updating=False) -> bool:
     link = meta.get("link")
     if link_key(link) < link_key(LINK_REQUIRED):
         warn(f"the ready-made engine at {base} is {link or 'version ' + str(meta.get('version'))}; this setup needs "
-             f"Strata Link {LINK_REQUIRED} or newer" + ("" if updating else ": compiling instead"))
+             f"engine {LINK_REQUIRED} or newer" + ("" if updating else ": compiling instead"))
         return False
     if link_key(link) < link_key(link_version()):
         if base == PREBUILT_URL:
@@ -11153,7 +11153,7 @@ def get_prebuilt(url_base, gpu, vision, updating=False, toolkit=13) -> Path | No
         restore()
         (warn if loud else lambda m: say("  " + m))(
             f"{why}: keeping the installed engine {have}" + ("" if installed.get("link") else
-            " (upstream's: Strata Link's own engine changes are off until it updates)"))
+            " (upstream's: Strata-Net's own engine changes are off until it updates)"))
         return eng
 
     if note and note["why"] == "does not start":
@@ -11188,7 +11188,7 @@ def get_prebuilt(url_base, gpu, vision, updating=False, toolkit=13) -> Path | No
         elif retry:
             note_release(eng, "does not start", retry.get("found"), retry.get("detail"))
         # upstream's get_prebuilt said why (a [!] line) unless it raised or had no URL
-        return keep(f"Strata Link's engine {link_version()} could not be had{err or ''}", err is not None or not url_base)
+        return keep(f"Strata-Net's engine {link_version()} could not be had{err or ''}", err is not None or not url_base)
     return got
 
 

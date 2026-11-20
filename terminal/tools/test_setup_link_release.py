@@ -243,7 +243,7 @@ class GetPrebuilt(unittest.TestCase):
         self.installed(source="release")                           # Niko1221's 0.1.44.1, no "link"
         eng, out, _, _ = self.run_get([], {})
         self.assertEqual(eng, self.root / "engine")
-        self.assertIn("Strata Link's own engine changes are off until it updates", out)
+        self.assertIn("Strata-Net's own engine changes are off until it updates", out)
 
     def test_a_download_that_fails_keeps_the_installed_engine(self):
         self.installed(source="release", link="0.1.44.1-link.1")
@@ -363,7 +363,7 @@ class GetPrebuilt(unittest.TestCase):
             eng, out, _, got = self.run_get([setup.PREBUILT_URL], self.release("0.1.44.1-link.1"))
         self.assertIsNone(eng)
         self.assertEqual(len(got), 1)
-        self.assertIn("needs Strata Link 0.1.44.1-link.2 or newer: compiling instead", out)
+        self.assertIn("needs engine 0.1.44.1-link.2 or newer: compiling instead", out)
         self.assertFalse((self.root / "engine" / setup.EXE).exists())
 
     def test_upstreams_release_zip_is_not_installed(self):
