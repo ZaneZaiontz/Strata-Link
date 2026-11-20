@@ -1206,6 +1206,9 @@ for line in sys.stdin:
     if line.startswith(("GEN", "BGEN")):
         if not state.exists():   # the first request finds the link gone, and the engine ends
             state.write_text("lost")
+            if "--kept" in sys.argv:
+                print("INFO remote_stage_kept=1\nERR remote stage: the peer closed the connection", flush=True)
+                continue
             print("ERR remote stage: the peer closed the connection", flush=True)
             if "--exit-after" in sys.argv:   # an end that takes a while (a real engine's teardown)
                 import time
@@ -1223,6 +1226,7 @@ class EngineWiring(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         root = Path(tmp.name)
+        self.state = root / "state"
         py = root / "native.py"
         py.write_text(FAKE_MAIN)
         if os.name == "nt":   # no shebangs on Windows: a .cmd runs the same fake engine
@@ -1233,7 +1237,7 @@ class EngineWiring(unittest.TestCase):
             py.write_text("#!" + sys.executable + "\n" + FAKE_MAIN)
             py.chmod(0o700)
         self.start = lambda *more: StrataEngine(
-            str(exe), ["--state", str(root / "state"), "--layer-split", "26", "--split-device", "0",
+            str(exe), ["--state", str(self.state), "--layer-split", "26", "--split-device", "0",
                        "--remote-stage", "10.10.10.2:7841", *more],
             log=str(root / "engine.log"), env=dict(os.environ, STRATA_STAGE_TLS=main_keys()))
         self.e = self.start()
@@ -1289,6 +1293,29 @@ class EngineWiring(unittest.TestCase):
         self.assertEqual(events[-1][1]["completion_tokens"], 1)
         self.assertIsNone(self.e.proc.poll())
         self.assertEqual(self.svc.metrics(workers=True)["stages"]["workers"][0]["reconnects"], 1)
+
+    def test_an_engine_that_keeps_running_is_used_at_once(self):
+        """An engine that says `INFO remote_stage_kept=1` before its ERR stays loaded: the request is continued by the
+        same process with no wait for an end (settle_stage_exit), and with recover_wait_s 0 the next request is."""
+        for wait in (30, 0):
+            with self.subTest(recover_wait_s=wait):
+                self.svc.engine.close()
+                self.e = self.svc.engine = self.start("--kept")
+                self.state.unlink(missing_ok=True)
+                self.svc.recover_wait_s = wait
+                old, t0 = self.e.proc, time.monotonic()
+                if wait:
+                    events = self.request()
+                    self.assertTrue([x for kind, x in events if kind == "ping" and x and x["state"] == "recovering"])
+                else:
+                    with self.assertRaises(Exception):
+                        self.request()
+                    events = self.request()
+                self.assertEqual(events[-1][1]["completion_tokens"], 1)
+                self.assertLess(time.monotonic() - t0, 5)
+                self.assertIs(self.e.proc, old)
+                self.assertIsNone(old.poll())
+                self.assertIsNone(self.e.stage_leaving)
 
     def test_restart_before_the_first_look(self):
         """The Monitor opened after the engine was started again: that start's link is a reconnect all the same."""

@@ -437,6 +437,11 @@ PREFILL_BEAT_S = 5.0   # a real (empty) chunk this often while a prompt is read,
 RECOVERING = "system dropped - recovering..."
 
 
+def recovery_status(lost) -> dict:
+    """The strata_status a client hears while its request waits for a lost remote stage (recover_wait_s)."""
+    return {"state": "recovering", "message": RECOVERING, "reason": str(lost)}
+
+
 # #4271: a streaming client that stops reading (a hung process, a network that dropped) leaves the thread that writes to
 # it blocked once the socket buffers are full - and that thread holds the engine's turn.  A write that makes no progress
 # for this long ends the request as a disconnect (the engine is stopped, the turn given back).  0: no limit, as before.
@@ -739,6 +744,7 @@ class StrataEngine:
     last_err = None                      # #997: an ERR that was its last stdout line (death_note says it)
     stage_err = None                     # a remote stage's last `ERR remote stage...`, when, the log's size then (Workers card)
     stage_leaving = None                 # the process that said `ERR remote stage...` (it ends after it): settle_stage_exit
+    stage_kept = None
     STAGE_EXIT_WAIT_S = 15.0             # how long the next request waits for that end
     stage_wait_at = None                 # when it last said a request waits for its worker (INFO remote_stage_wait=)
     ready_at = None                      # when the engine said READY (a remote stage's link is made just before)
@@ -1082,14 +1088,19 @@ class StrataEngine:
                     continue
                 except (IndexError, ValueError):
                     pass
-            if line.startswith(("ERR remote stage", "INFO remote_stage_wait=")) and self.proc is proc:
+            if line.startswith(("ERR remote stage", "INFO remote_stage_wait=", "INFO remote_stage_kept=")) \
+                    and self.proc is proc:
                 if line[0] == "E":                      # the Workers card says it (the request reads it as well),
                     try:                                # after the log's lines so far (its order among them)
                         pos = os.path.getsize(self.log_path) if self.log_path else None
                     except OSError:
                         pos = None
                     self.stage_err = (line[4:].strip(), time.time(), pos)
-                    self.stage_leaving = proc           # (set before the request reads the line: see settle_stage_exit)
+                    if self.stage_kept is not proc:     # (set before the request reads the line: see settle_stage_exit)
+                        self.stage_leaving = proc
+                    self.stage_kept = None
+                elif line.startswith("INFO remote_stage_kept="):
+                    self.stage_kept = proc
                 else:                                   # a request waits for the worker (every 10 s meanwhile)
                     self.stage_wait_at = time.time()
             lines.put(line)
@@ -1157,7 +1168,8 @@ class StrataEngine:
         yes, and that request would be sent to an engine on its way out and fail as well (Strata Link's fault test,
         2026-10-27: a 503 "stopped unexpectedly" 0.9 s after the first one).  Waits for that end (STAGE_EXIT_WAIT_S at
         most); the request then starts the engine again, as after any end.  A STOP while it connected again keeps the
-        engine running: then the wait runs out and the request goes on with it."""
+        engine running: then the wait runs out and the request goes on with it.  An engine that printed
+        `INFO remote_stage_kept=1` before its ERR stays loaded (it connects again at the next request): no wait."""
         proc, self.stage_leaving = self.stage_leaving, None
         if proc is None or proc is not self.proc or proc.poll() is not None:
             return
@@ -4874,7 +4886,7 @@ class Service:
         request's turn stays held until the start ends, even when the request stops waiting first."""
         print(f"[strata] the request waits up to {self.recover_wait_s:g} s for the engine to be ready again, then "
               "continues its answer (recover_wait_s)", flush=True)
-        status = {"state": "recovering", "message": RECOVERING, "reason": str(lost)}
+        status = recovery_status(lost)
         with self.status_lock:
             st["phase"] = "recovering"
         failed = []
@@ -5929,7 +5941,7 @@ class Service:
         tail = ""                                       # the last characters written (the newlines before a call)
         answered, close_retried = False, False          # #1053: content or a call came out; the thinking was closed
         nf_retried = False                              # #879: the request was sent again after non-finite logits
-        recovered_n = None
+        recovered_n, recovering = None, None
 
         def recoverable(e):
             """A remote stage lost in the middle of this request, which keeps the request and continues its answer
@@ -6092,9 +6104,10 @@ class Service:
                                 if t is None:               # heartbeat while the engine is quiet
                                     last_print = self._progress(last_print, st=st)
                                     last_out = time.perf_counter()
-                                    yield "ping", None
+                                    yield "ping", recovering
                                     continue
                                 n += 1
+                                recovering = None
                                 if first_engine_token_s is None:
                                     first_engine_token_s = round(time.perf_counter() - waiting, 3)
                                     with self.status_lock:
@@ -6201,7 +6214,7 @@ class Service:
                         if lost is not None:
                             if not (yield from self._recover(lost, cancel, turn, st)):
                                 break
-                            recovered_n, finish = n, "length"
+                            recovered_n, finish, recovering = n, "length", recovery_status(lost)
                             prompt = prompt + seg
                             continue
                         if nonfinite and not cancel.is_set():
