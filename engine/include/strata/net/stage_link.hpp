@@ -111,23 +111,35 @@ struct StageHello {
     int32_t vision = 0;           ///< started with --vision (a main process with it needs a worker with it)
     int32_t ckpt_max = 0;         ///< the main process: the checkpoint parts it may have the worker keep (0: none)
     /// the row formats this side sends and reads (bit 1 << StageRows); the link uses the narrowest both list.  A main
-    /// process lists fp32 and the one it asks for (STRATA_REMOTE_ROWS), a worker every one it has
+    /// process lists fp32 and the ones every stream asks for (STRATA_REMOTE_ROWS), a worker every one it has
     uint32_t row_formats = 1u << 0;
     char build[48] = {};          ///< engine build id (informational)
-    char unused[64] = {};         ///< (protocol 7's token: the TLS handshake proves both ends now)
+    /// with kStageCapStreamRows: the row formats per stream, 16 bits each (bits 16 * StageStream), as row_formats
+    uint64_t stream_rows = 0;
+    char unused[56] = {};         ///< (protocol 7's token: the TLS handshake proves both ends now)
 };
 #pragma pack(pop)
 // one size across protocols: an older peer's hello is read whole and refused for its protocol, not as malformed
 static_assert(sizeof(StageHello) == 192, "the hello's size");
 
-/// How a message's rows (a window's, a prompt chunk's, both ways) travel.  fp32 is the engine's own and the default;
+/// How a message's rows (a window's, a prompt chunk's, both ways) travel.  fp32 is the engine's own;
 /// bf16 halves the bytes and rounds each value to 8 significant bits (round to nearest even, as the GPU kernels do).
 /// The engine's buffers stay fp32 on both sides: the link converts as it sends and reads.  A format that loses
-/// precision is the main process's choice (STRATA_REMOTE_ROWS); a worker lists every one it has.
+/// precision is the main process's choice, per StageStream (STRATA_REMOTE_ROWS and STRATA_REMOTE_ROWS_WINDOW,
+/// _PROMPT, _DRAFT); a worker lists every one it has.
 enum class StageRows : uint32_t { F32 = 0, BF16 = 1 };
 inline constexpr uint32_t kStageRowsAll = (1u << (uint32_t) StageRows::F32) | (1u << (uint32_t) StageRows::BF16);
 /// The format of a link whose two hellos list `a` and `b`: the narrowest in both (fp32 when no other is).
 StageRows stage_rows_agreed(uint32_t a, uint32_t b);
+/// The three streams of rows, each with its own format: the verify windows' (both ways), the prompt chunks' going to
+/// the worker, and the prompt chunks' coming back (read only by the drafter).
+enum class StageStream : uint32_t { Window = 0, Prompt = 1, Draft = 2 };
+/// The format of stream `s` between hellos `a` and `b`: from their stream_rows when both list kStageCapStreamRows,
+/// else from row_formats (one format for every stream, as before).
+StageRows stage_rows_for(const StageHello& a, const StageHello& b, StageStream s);
+/// A main process's hello asks for `window`, `prompt` and `draft`: fp32 and that format per stream, and in
+/// row_formats (for a peer without kStageCapStreamRows) fp32 and the formats all three ask for.
+void stage_rows_ask(StageHello& h, StageRows window, StageRows prompt, StageRows draft);
 const char* stage_rows_name(StageRows f);
 /// "fp32" / "bf16" (as STRATA_REMOTE_ROWS names them); false for another name
 bool stage_rows_parse(const std::string& name, StageRows& f);
@@ -155,6 +167,9 @@ inline constexpr uint32_t kStageCapPark = 1u << 30;
 /// of a remote main process's session file on its own disk (--stage-session-dir) and takes SessionPut / SessionGet;
 /// a main process sends them only to a worker that lists it (and lists nothing itself).  An older peer ignores it.
 inline constexpr uint32_t kStageCapSession = 1u << 29;
+/// Bit 28 (kStageCapStreamRows): stream_rows holds this side's row formats per stream (stage_rows_for).  A worker lists
+/// it with every format in every stream; an older peer ignores it and its hello's stream_rows.
+inline constexpr uint32_t kStageCapStreamRows = 1u << 28;
 /// The 128-bit token of a session file's worker half (SessionPut / SessionGet): all zeros is no token.
 using StageToken = std::array<uint64_t, 2>;
 /// the row_formats bits for a K/V element type as --kv names it (fp16, int8, q4_0, k8v4); 0 for another name
@@ -268,16 +283,16 @@ public:
 
     const StageStats& stats() const { return stats_; }
     std::string peer_name() const { return peer_; }
-    /// the row format the connection agreed on (connect)
-    StageRows rows() const { return rows_; }
+    /// the row format the connection agreed on for stream `s` (connect)
+    StageRows rows(StageStream s) const { return rows_[(size_t) s]; }
     /// After connect: the worker's certificate (its name and fingerprint), the TLS version and cipher.
     std::string tls_peer() const { return tls_ != nullptr ? tls_->peer() : std::string(); }
 
 private:
-    /// `rows` > 0: the payload is that many rows of `width` floats in the link's format, read into `reply` (floats),
+    /// `rows` > 0: the payload is that many rows of `width` floats in format `f`, read into `reply` (floats),
     /// their conversion's time added to *conv_ms
     bool read_reply_(StageMsg want, void* reply, size_t reply_bytes, int64_t& worker_us, std::string& err,
-                     size_t rows = 0, size_t width = 0, double* conv_ms = nullptr);
+                     size_t rows = 0, size_t width = 0, double* conv_ms = nullptr, StageRows f = StageRows::F32);
     /// a synchronous message with a keep[] payload (Reset, CkptSave, CkptRestore); `reply_a`: the reply's `a`
     bool keep_call_(StageMsg type, StageMsg want, int64_t a, int64_t b, const std::vector<int64_t>& keep,
                     int64_t& reply_a, std::string& err);
@@ -290,7 +305,7 @@ private:
     std::intptr_t fd_ = -1;   ///< the socket (a Winsock SOCKET fits; -1: none)
     std::atomic<bool> broken_{false};   ///< (the sending side sets it, the receiving side reads it)
     std::string peer_;
-    StageRows rows_ = StageRows::F32;
+    StageRows rows_[3] = {StageRows::F32, StageRows::F32, StageRows::F32};   ///< per StageStream
     std::shared_ptr<TlsCredentials> cred_;
     std::unique_ptr<TlsSession> tls_;     ///< the connection's (both threads': it locks inside)
     std::vector<char> tls_tx_, tls_rx_;   ///< records going out (send_mu_), bytes coming in (recv_mu_)

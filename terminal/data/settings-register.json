@@ -35036,14 +35036,14 @@
    ],
    "reads": [
     {
-     "file": "src/program/generate.cpp",
-     "line": 14963,
+     "file": "engine/src/program/generate.cpp",
+     "line": 16479,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
-     "file": "src/program/generate.cpp",
-     "line": 14969,
+     "file": "engine/src/program/generate.cpp",
+     "line": 16493,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -35066,7 +35066,112 @@
    "last_date": "2026-10-16",
    "status": "opt-in",
    "owner": "program",
-   "note": "[checked] Remote stage, main process: =bf16 sends the hand-off rows as bf16 (half the bytes, the answers change a little) when the worker has it; unset or fp32 keeps fp32, and a worker ignores its own value (src/program/generate.cpp:14963,14969); opt-in per docs/remote-stage/ENGINEERING.md:78.",
+   "note": "[checked] Remote stage, main process: =bf16 or =fp32 sets the format of all three row streams (windows, prompt rows out, prompt rows back); a STRATA_REMOTE_ROWS_WINDOW / _PROMPT / _DRAFT of its own wins over it. Unset: fp32, except the prompt rows back, which are bf16 (only the drafter reads them). A worker ignores its own value (engine/src/program/generate.cpp:16479); docs/remote-stage/ENGINEERING.md, Row formats.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_REMOTE_ROWS_DRAFT",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/program/generate.cpp",
+     "line": 16503,
+     "backend": "cuda-hip",
+     "fn": "rows_env"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/remote-stage/ENGINEERING.md:78"
+   ],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "rollback",
+   "owner": "program",
+   "note": "[checked] Remote stage, main process: the prompt chunks' rows coming back, which only the drafter reads (engine/src/program/generate.cpp, sp.on_chunk -> mtp.prefill). Default bf16 (or STRATA_REMOTE_ROWS); =fp32 sends them in full as before 2026-11-20. Measured: drafts kept and answers vary no more than between two fp32 runs; docs/remote-stage/ENGINEERING.md, Row formats per stream.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_REMOTE_ROWS_PROMPT",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/program/generate.cpp",
+     "line": 16502,
+     "backend": "cuda-hip",
+     "fn": "rows_env"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/remote-stage/ENGINEERING.md:78"
+   ],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "program",
+   "note": "[checked] Remote stage, main process: the prompt chunks' rows going to the worker, as bf16 or fp32 (default fp32, or STRATA_REMOTE_ROWS). bf16 changes answers a little; docs/remote-stage/ENGINEERING.md, Row formats.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_REMOTE_ROWS_WINDOW",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/program/generate.cpp",
+     "line": 16501,
+     "backend": "cuda-hip",
+     "fn": "rows_env"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/remote-stage/ENGINEERING.md:78"
+   ],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "opt-in",
+   "owner": "program",
+   "note": "[checked] Remote stage, main process: the verify windows' rows, both ways, as bf16 or fp32 (default fp32, or STRATA_REMOTE_ROWS). bf16 changes answers a little; docs/remote-stage/ENGINEERING.md, Row formats.",
    "retire_after": "",
    "retired_in": ""
   },
