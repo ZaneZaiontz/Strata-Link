@@ -152,7 +152,21 @@ restore) and is idle between them, so a worker stuck on its GPU ends with its st
 later main process at the hello. A relay's waits for its next worker (a connect, its taking a prompt chunk, a window's,
 a reset's or a checkpoint's reply) get an allowance of `STRATA_REMOTE_TIMEOUT_S` + 150 s instead: the link's timeouts
 end them, and a stuck next worker ends alone, with its
-own report. `STRATA_REMOTE_STALL_AT=N` (a test hook) blocks the worker's Nth window. Checked on CUDA (the 3080 + 2080 Ti
+own report. Every process's sends and receives on a link count the same way (`core::LinkCall` around the socket
+call in `send_all` and `recv_some`): while one is under way and began less than `STRATA_REMOTE_TIMEOUT_S` +
+`STRATA_WATCHDOG_S` ago, a silent step is the link's wait, not a stall, and the log says so once. That bound is the
+socket's own time-out, so a link that moves nothing still ends as a lost link, and a GPU stuck while no send or
+receive is under way is still caught at `STRATA_WATCHDOG_S`. A main process also prints `INFO remote_stage_wait=S`
+every 10 s of such a wait, as it does while it connects, because the server's frozen-engine check
+(`STRATA_ENGINE_STALL_S`: no line, no CPU, no disk) would otherwise end it first: a main waiting on a stalled link
+uses almost no CPU. Measured on the 3080 + 5070 pair through a TCP proxy that shapes the link, at 15 ms and
+20 Mbit/s each way, fp32 rows, no watchdog settings: before, the main stopped itself 60 s into the second chunk of a 4,179-token prompt;
+after, that prompt read in 119 s and an 8,478-token one in 190 s, each 2,944-token chunk 97-100 s from its send to
+its rows. With the link cut to 0.001 Mbit/s mid-prompt, the request ended 293 s later with
+`remote stage: send failed: Broken pipe` and a 503 (323 s after the chunk's send, so within one socket time-out of
+the last bytes that moved; the worker logged the main closing the connection), and
+the next request after the link came back was answered in 39 s, the main engine started again.
+`STRATA_REMOTE_STALL_AT=N` (a test hook) blocks the worker's Nth window. Checked on CUDA (the 3080 + 2080 Ti
 pair, `STRATA_REMOTE_STALL_AT=60 STRATA_WATCHDOG_S=20` on the worker): the worker wrote its stall report 20 s into the
 blocked window and exited; the request in flight failed 25-26 s after it was sent (`remote stage: the peer closed the
 connection`), and the next request failed after 66-68 s (two runs), when the server's three starts had each ended with
