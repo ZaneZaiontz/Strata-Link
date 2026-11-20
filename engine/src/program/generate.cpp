@@ -16522,7 +16522,11 @@ int main(int argc, char** argv) {
                 // for a prompt of `tokens`.)
                 int64_t lend_chunk = pf_chunk;
                 auto lend_whole = [&](int64_t tokens) {
+#if defined(STRATA_PREFILL_FUSED) && !defined(STRATA_PREFILL_MMQ)
                     const int64_t want_full = loan_chunk(tokens, planned_chunk(tokens, o.prefill_chunk, pf_plan_chunk, false));   // (as lend(), today's cut)
+#else
+                    const int64_t want_full = loan_chunk(tokens, planned_chunk(tokens, o.prefill_chunk, pf_plan_chunk));
+#endif
                     const int64_t want = split_small > 0 && tokens <= split_small_max ? std::min(want_full, split_small)
                                                                                       : want_full;
                     for (const PfPart& p : pf_parts) {
