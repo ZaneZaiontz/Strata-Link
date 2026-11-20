@@ -140,8 +140,11 @@ connect returns: the server's frozen-engine check (`ENGINE_STALL_S`, 90 s withou
 engine first, and the request would get "frozen" instead of the link's error. Not at the engine's start: the server
 then waits for READY and reads INFO lines as settings. A worker
 down for longer is still found: the engine ends with the error, and the server's next request starts it again,
-which tries anew. A link lost in the middle of a request still ends the main engine; the server answers an
-`ERR remote stage: ...`, and the worker's own `ERR remote stage (worker): ...`, with 503 `server_error` and
+which tries anew. A link lost in the middle of a request still ends the main engine. The server keeps that request:
+`Service._recover` starts the engine again on a thread while the client hears a `strata_status` every 5 s, then the
+pass loop continues the answer with the prompt plus the tokens so far, up to `"recover_wait_s"` (300 s;
+[REMOTE_STAGE.md](../REMOTE_STAGE.md#a-pc-drops-in-the-middle-of-an-answer)). Past that, or with it at 0, the server
+answers an `ERR remote stage: ...`, and the worker's own `ERR remote stage (worker): ...`, with 503 `server_error` and
 `Retry-After: 30` (`RemoteStageLost` in `serve/server.py`; an error event once a stream has started), not a 400. A
 Commit's error that the next Reset drops is written on the worker's stderr first. `stage_link_test` covers the
 take-over over loopback with `STRATA_REMOTE_TAKEOVER_S=1` (a second main not served while the first sends a message
@@ -1505,7 +1508,7 @@ All three answered the picture check.
   done. So far the start of every benchmark answer (the 100-160 characters the benchmark keeps) was read: coherent and
   on topic in every configuration.
 - **Reconnecting** in the middle of a request (a link lost between requests is made again at the next request's
-  start; one lost mid-request ends the main engine, and the server starts it again). Faults run on GPUs: two PCs,
+  start; one lost mid-request ends the main engine, and the server starts it again and continues the request). Faults run on GPUs: two PCs,
   Linux on both ([The recovery's open points](#the-recoverys-open-points-2026-10-13)); a relay's next worker, a
   network partition and a Windows PC on either side were not; conversation checkpoints across stages
   ([CHECKPOINTS.md](CHECKPOINTS.md): built, opt-in with `--prompt-cache N`, checked on two GPUs; a relay is not
