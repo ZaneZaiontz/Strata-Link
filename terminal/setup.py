@@ -10958,10 +10958,13 @@ def link_version() -> str:
 
 
 def link_key(v) -> tuple:
-    """'0.1.45-link.2' -> ((0, 1, 45), 2), comparable; anything else (an upstream engine has no "link") is
-    ((), 0), older than every Link release."""
-    m = re.fullmatch(r"(\d+(?:\.\d+)*)-link\.(\d+)", str(v or "").strip())
-    return (tuple(int(x) for x in m.group(1).split(".")), int(m.group(2))) if m else ((), 0)
+    """'0.1.45-link.2' -> ((0, 1, 45), 0, 2), comparable; a Strata-Net release ('0.1.62-net.1') comes after every
+    -link one of the same engine version; anything else (an upstream engine has no "link") is ((), 0, 0), older than
+    every release."""
+    m = re.fullmatch(r"(\d+(?:\.\d+)*)-(link|net)\.(\d+)", str(v or "").strip())
+    if not m:
+        return (), 0, 0
+    return tuple(int(x) for x in m.group(1).split(".")), int(m.group(2) == "net"), int(m.group(3))
 
 
 def link_outdated(meta: dict) -> bool:
