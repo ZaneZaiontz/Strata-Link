@@ -241,6 +241,42 @@ static void test_link_cost() {
     CHECK(near(net(main_pc, b), 2.0 * (15 + 1.2 + lan_row)));
 }
 
+/// Crossings a window: a chain goes out and back through every node, 2(N - 1); a ring returns from the last node
+/// straight to the coordinator, N.  Two nodes are the same either way.
+static void test_chain_and_ring() {
+    SplitModel m;
+    NodeCap a{"a", 0, 0, 0.5}, b{"b", 0, 0, 0.5}, c{"c", 0, 0, 0.5};
+    a.delay_ms = {{"b", 10}, {"c", 10}};
+    b.delay_ms = {{"c", 10}};
+    const double hop = 10 + 1.2 + 51216.0 / 117500.0;
+    auto crossings_of = [&](const std::vector<NodeCap>& nodes, const std::vector<int64_t>& at) {
+        return (evaluate_split(m, nodes, at).ms - 24.0) / hop;
+    };
+    CHECK(std::fabs(crossings_of({a, b, c}, {16, 32}) - 4) < 1e-9 && std::fabs(crossings_of({a, b}, {30}) - 2) < 1e-9);
+    m.ring = true;
+    CHECK(std::fabs(crossings_of({a, b, c}, {16, 32}) - 3) < 1e-9 && std::fabs(crossings_of({a, b}, {30}) - 2) < 1e-9);
+}
+
+/// auto_pool: the order of the workers (c is far from the coordinator, b near both), and a worker behind a slow
+/// upload that costs more than its faster GPU gives.
+static void test_pool_order() {
+    SplitModel m;
+    m.layer_arena_bytes.assign(48, (int64_t) 1 << 30);
+    NodeCap a{"a", 0, (int64_t) 20 << 30, 0.5}, b{"b", 0, (int64_t) 16 << 30, 0.5}, c{"c", 0, (int64_t) 16 << 30, 0.5};
+    a.delay_ms = {{"b", 1}, {"c", 30}};
+    b.delay_ms = {{"c", 1}};
+    const SplitPlan given = auto_split(m, {a, c, b});
+    const SplitPlan best = auto_pool(m, {a, c, b});
+    CHECK(given.ok && best.ok && best.order == std::vector<int>({0, 2, 1}) && best.ms < given.ms - 50);
+    SplitModel open;
+    NodeCap head{"head", 0, 0, 0.5}, fast{"fast", 0, 0, 0.2};
+    const SplitPlan lan = auto_pool(open, {head, fast});
+    CHECK(lan.ok && lan.order.size() == 2);
+    fast.up_mbit = 2;
+    const SplitPlan slow = auto_pool(open, {head, fast});
+    CHECK(slow.ok && slow.order == std::vector<int>({0}) && slow.at.empty());
+}
+
 int main() {
     test_parse_split();
     test_split();
@@ -248,6 +284,8 @@ int main() {
     test_measured_split();
     test_split_kv_and_failures();
     test_link_cost();
+    test_chain_and_ring();
+    test_pool_order();
     if (failures) { std::fprintf(stderr, "%d check(s) failed\n", failures); return 1; }
     std::printf("stage_split_test: all checks passed\n");
     return 0;

@@ -85,6 +85,7 @@ struct SplitModel {
     double hop_overhead_ms = 1.2;
     int64_t window_rows = 1;      ///< rows a decode window sends each way (the drafts + 1)
     int64_t row_bytes = 51216;    ///< one window row: 12,804 floats in fp32 (half that in bf16)
+    bool ring = false;   ///< the last node sends straight back to the coordinator: N crossings a window, not 2(N - 1)
     const SplitCalib* calib = nullptr;   ///< measured timings of this pool: used when `usable` for these nodes
     const SplitCalib* failures = nullptr;   ///< its `failed` splits are skipped by auto_split (usable or not)
 };
@@ -102,11 +103,17 @@ struct SplitPlan {
     std::vector<double> node_pred;   ///< the built-in model's ms per window for each node's range
     std::vector<double> node_ms;     ///< ... as predicted for this plan (scaled by the measurements when `measured`)
     bool measured = false;           ///< `ms` rests on this pool's measured timings
+    std::vector<int> order;          ///< (auto_pool) the positions in its `nodes` of the nodes used, in chain order
 };
 
 /// The best placement over `nodes` (coordinator first).  Every placement for 2 or 3 nodes; beyond that, layers in
 /// proportion to speed, then nudged to fit RAM.
 SplitPlan auto_split(const SplitModel& m, const std::vector<NodeCap>& nodes);
+
+/// The best plan over every order of the workers and every number of them: auto_split for the coordinator alone,
+/// then with each ordered choice of workers (with per-pair delays the order matters, and a slow link can make a
+/// worker cost more than it gives).  For up to about 7 nodes.
+SplitPlan auto_pool(const SplitModel& m, const std::vector<NodeCap>& nodes);
 
 /// The prediction for a given placement (`at` as above); `ok` false with `why` when a node's RAM cannot hold its
 /// range or a range is empty.

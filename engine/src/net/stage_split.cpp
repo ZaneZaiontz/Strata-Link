@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <numeric>
 
 namespace strata::pool {
 
@@ -29,17 +30,19 @@ static double crossing_ms(const SplitModel& m, const NodeCap& a, const NodeCap& 
     return std::max(delay(a, b), delay(b, a)) + m.hop_overhead_ms + bytes / (mbit * 125.0);
 }
 
-/// A decode window's crossings in order, as (from, to) node positions: out through every node, then back the same way.
-static std::vector<std::pair<int, int>> crossings(int ns) {
+/// A window's crossings in order, as (from, to) node positions: out through every node, then back the same way (a
+/// chain) or from the last node straight to the coordinator (a ring).
+static std::vector<std::pair<int, int>> crossings(int ns, bool ring) {
     std::vector<std::pair<int, int>> hops;
     for (int i = 0; i + 1 < ns; ++i) hops.push_back({i, i + 1});
-    for (int i = ns - 1; i > 0; --i) hops.push_back({i, i - 1});
+    if (ring && ns > 1) hops.push_back({ns - 1, 0});
+    for (int i = ns - 1; !ring && i > 0; --i) hops.push_back({i, i - 1});
     return hops;
 }
 
 /// The network's ms per decode window: every crossing priced per link, or `hop_ms` each without link facts.
 static double window_net_ms(const SplitModel& m, const std::vector<NodeCap>& nodes) {
-    const auto hops = crossings((int) nodes.size());
+    const auto hops = crossings((int) nodes.size(), m.ring);
     if (!has_link_facts(nodes)) return m.hop_ms * (double) hops.size();
     double ms = 0;
     for (const auto& [a, b] : hops)
@@ -374,6 +377,32 @@ SplitPlan auto_split(const SplitModel& m, const std::vector<NodeCap>& nodes) {
         return auto_split(plain, nodes);
     }
     if (!best.ok) best.why = last_why.empty() ? "no placement fits" : last_why;
+    return best;
+}
+
+SplitPlan auto_pool(const SplitModel& m, const std::vector<NodeCap>& nodes) {
+    SplitPlan best;
+    best.why = "no placement fits";
+    if (nodes.empty()) return best;
+    std::vector<int> rest(nodes.size() - 1);
+    std::iota(rest.begin(), rest.end(), 1);
+    do {
+        std::vector<NodeCap> pool = {nodes[0]};
+        std::vector<int> order = {0};
+        for (size_t k = 0; k <= rest.size(); ++k) {
+            if (k > 0) {
+                pool.push_back(nodes[(size_t) rest[k - 1]]);
+                order.push_back(rest[k - 1]);
+            }
+            if (!std::is_sorted(rest.begin() + (std::ptrdiff_t) k, rest.end())) continue;
+            SplitPlan p = auto_split(m, pool);
+            if (!p.ok && !best.ok) best.why = p.why;
+            if (p.ok && (!best.ok || p.ms < best.ms * 0.999)) {
+                best = p;
+                best.order = order;
+            }
+        }
+    } while (std::next_permutation(rest.begin(), rest.end()));
     return best;
 }
 
