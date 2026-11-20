@@ -546,7 +546,7 @@ applies at the next start. Network, key, MCP and program keys are not editable t
 | `aliases` | none | Extra model names listed in `/v1/models`, like llama-server's `--alias`. Any other name is still served. |
 | `fit_max_tokens` | `true` | A request whose `max_tokens` runs past the context gets it shortened to the room left. `false` (or `--no-fit-max-tokens`) returns 400 instead. A prompt that leaves no room is always refused. |
 | `engine_silence_s` | `300` | Ends the engine after this many seconds without a line during a request (`0` = wait forever). While a prompt is read, each chunk may take three times the previous one's time. |
-| `recover_wait_s` | `300` | A remote stage lost in the middle of a request: how long the request waits for the engine to be ready again before it ends with the error; meanwhile streams get a `strata_status` and the answer then carries on ([REMOTE_STAGE.md](REMOTE_STAGE.md#a-pc-drops-in-the-middle-of-an-answer)). `0` = end at once, as before. |
+| `recover_wait_s` | `300` | A remote stage lost in the middle of a request: how long the request waits, counted from the drop, for the engine to be ready again and connected to its worker before it ends with the error; meanwhile streams get a `strata_status` and the answer then carries on ([REMOTE_STAGE.md](REMOTE_STAGE.md#a-pc-drops-in-the-middle-of-an-answer)). `0` = end at once, as before. |
 | `parallel` | `1` | Up to N requests decoded together in batch slots ([BATCHING.md](BATCHING.md)). |
 | `api_monitor` | off | Records requests for `/api-monitor`. |
 | `lazy_load` | off | Start without loading the model. |

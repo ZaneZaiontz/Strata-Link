@@ -17579,7 +17579,7 @@ int main(int argc, char** argv) {
         // A link lost in the middle of a request, or the worker's own error, on a serial path (no --pipeline-windows,
         // no --batch): once the GPU has finished what is still in flight (a prompt chunk's own layers may be) without
         // a fault, the request ends with the error and the engine stays; the next request connects again and reads
-        // its prompt anew
+        // its prompt from the deepest checkpoint the worker kept (stage_resumes), else from token 0
         auto remote_survivable = [&](const std::string& e) {
             return remote_main && !pipe && o.batch == 0 && cudaDeviceSynchronize() == cudaSuccess &&
                    (strata::net::stage_link_lost(e) || e.rfind("remote stage (worker): ", 0) == 0);

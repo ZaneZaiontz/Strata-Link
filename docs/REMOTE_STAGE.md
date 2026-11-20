@@ -382,8 +382,10 @@ own error) the main engine waits for its GPU, ends that request with the error a
 `INFO remote_stage_kept=1`, closes the link and stays loaded. The server does not end the request then: it sends the
 prompt plus the tokens already written at once, the way it already continues an answer at a thinking budget, and the
 engine connects to the worker again inside that request (every 2 s for `STRATA_REMOTE_CONNECT_S`; the worker's node
-agent starts a worker that ended again, after 5 s and more). The client gets nothing twice and misses nothing. The
-engine reads that prompt from token 0, so a long conversation adds its reading time to the wait.
+agent starts a worker that ended again, after 5 s and more). The client gets nothing twice and misses nothing. With
+`--prompt-cache` and the same worker process on the other side (a link that broke, not a worker that ended), the
+engine resumes that prompt from the deepest checkpoint both sides still hold; otherwise it reads it from token 0, so
+a long conversation adds its reading time to the wait.
 
 A main engine that is killed, a GPU fault, and a main started with `--pipeline-windows` or `--batch` still end the
 engine. The server then starts it again on a thread, which connects as at any start, and continues the answer once it
@@ -401,9 +403,14 @@ What a client sees meanwhile, about every 5 s:
 | any of them, not streamed | nothing until the whole answer comes, as a normal 200 |
 
 Nothing is ever written into the answer's own text. `"recover_wait_s"` in the server's config is how long a request
-waits (default 300 s; 0 turns this off and gives the behaviour before it). When that passes, when the engine cannot be
-started, or when the engine is lost again before it wrote one more token, the request ends as before: a streamed
-answer with an error event after the text it already has, any other with 503 `server_error` and `Retry-After: 30`.
+waits, counted from the drop (default 300 s; 0 turns this off and gives the behaviour before it). It also limits the
+engine's own reconnect: a main engine that stayed up and still waits for its worker when the time is up (it would
+try for `STRATA_REMOTE_CONNECT_S`, 180 s) is stopped then, and a request that finds the link lost as it starts
+counts from the start of the engine's wait. The server checks at the engine's wait lines, which come every 10 s, so
+the end can come up to 10 s late. A prompt the engine reads again after it connected is never cut short; that time
+comes on top. When the time is up, when the engine cannot be started, or when the engine is lost again before it
+wrote one more token, the request ends as before: a streamed answer with an error event after the text it already
+has, any other with 503 `server_error` and `Retry-After: 30`.
 The engine's start goes on after a request gave up, and the next request waits for it. Requests with pictures and a
 server with batch slots (`"parallel"`) are not recovered: they end as before.
 

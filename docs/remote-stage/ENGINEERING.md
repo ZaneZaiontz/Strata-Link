@@ -158,7 +158,10 @@ the failed chunk's error, so the next prompt read failed with it until
 `Service._recover` starts the engine again on a thread if it ended (a kept one is ready at once: the pump does not
 mark it as leaving, so `settle_stage_exit` does not wait) while the client hears a `strata_status` every 5 s, then the
 pass loop continues the answer with the prompt plus the tokens so far, up to `"recover_wait_s"` (300 s;
-[REMOTE_STAGE.md](../REMOTE_STAGE.md#a-pc-drops-in-the-middle-of-an-answer)). Past that, or with it at 0, the server
+[REMOTE_STAGE.md](../REMOTE_STAGE.md#a-pc-drops-in-the-middle-of-an-answer)) from the drop. A pass whose engine
+still waits for its worker then (an `INFO remote_stage_wait` line past that time, with no token since the drop) is
+stopped, which ends the engine's connect wait at once (`remote_cancelled`); a pass whose engine says it waits before
+any loss was reported counts from 10 s before that first line. Past that, or with it at 0, the server
 answers an `ERR remote stage: ...`, and the worker's own `ERR remote stage (worker): ...`, with 503 `server_error` and
 `Retry-After: 30` (`RemoteStageLost` in `serve/server.py`; an error event once a stream has started), not a 400. A
 Commit's error that the next Reset drops is written on the worker's stderr first. `stage_link_test` covers the
