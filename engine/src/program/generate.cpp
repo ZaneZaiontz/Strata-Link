@@ -16503,6 +16503,8 @@ int main(int argc, char** argv) {
                 const StageRows draft = rows_env("STRATA_REMOTE_ROWS_DRAFT", StageRows::BF16);
                 if (!rows_ok) return 1;
                 strata::net::stage_rows_ask(me, window, prompt, draft);
+                me.row_formats |= strata::net::kStageCapResume;
+                me.instance = (uint64_t) std::chrono::system_clock::now().time_since_epoch().count() | 1;
                 remote_hello = me;
                 if (!remote_connect(err, false)) {
                     std::fprintf(stderr, "strata serve: %s\n", err.c_str());
@@ -17297,9 +17299,10 @@ int main(int argc, char** argv) {
                         }
                         return wk_positions_set(table, cells_in, e);
                     };
+                if (!stage_relay) hs.new_main = [&] { ckpt_store.clear(); };
                 hs.disconnected = [&] {
                     std::string e;
-                    ckpt_store.clear();   // a new main process is a new id space
+                    if (stage_relay) ckpt_store.clear();   // a new main process is a new id space
                     park_store.clear();   // (its parked conversations too)
                     (void) ver.wait_commit(e);
                     // a picture's positions do not reach the next main process's text (a relay's next worker resets
@@ -17537,15 +17540,16 @@ int main(int argc, char** argv) {
         // mrope_host) - a link made again gets them again, as a worker's table starts from the identity
         int64_t remote_pos_cells = -1;
         // remote-stage main: the link was made again since a request's start last looked (a new connection, maybe a
-        // new worker process): the worker holds no session and no checkpoint part, so this side's live session and
+        // new worker process): the worker holds no session and no checkpoint part (unless it kept this process's parts:
+        // stage_resumes, and then only the live session goes), so this side's live session and
         // checkpoints are dropped (before the resume decision, or after a read from token 0 that made it again).
         // Never cleared before that: a request refused in between leaves it to the next one.
         bool remote_fresh = false;
         // A request's first messages (its positions, its reset) found the link lost: connect again (remote_connect)
         // and send this request's positions again; the caller then sends its message again.  Nothing of the old
         // connection carries over: the worker zeroes its session at the reset, its checkpoint parts went with the old
-        // connection (remote_fresh), and the hello carries the rest (the tail-skip rank, --vision, the chunk).  A link
-        // lost in the middle of a request ends that request (remote_survivable).
+        // connection unless it kept them (remote_fresh, stage_resumes), and the hello carries the rest (the tail-skip
+        // rank, --vision, the chunk).  A link lost in the middle of a request ends that request (remote_survivable).
         auto remote_relink = [&](std::string& e) -> bool {
             if (!strata::net::stage_link_lost(e)) return false;
             const std::string lost = e;
@@ -20277,6 +20281,14 @@ int main(int argc, char** argv) {
             // worker holds neither the live session nor any checkpoint part, so neither is continued from (every
             // checkpoint of a remote main has a part there) and this prompt is read from token 0, its reset keeping
             // nothing
+            if (remote_fresh && strata::net::stage_resumes(remote_hello, remote_peer)) {
+                remote_fresh = false;
+                if (live_ok || !checks.empty())
+                    std::fprintf(stderr, "strata serve: remote stage: the worker kept its checkpoint parts after "
+                                         "connecting again: dropped the live session, %zu checkpoint%s kept\n",
+                                 checks.size(), checks.size() == 1 ? "" : "s");
+                live_ok = false;
+            }
             if (remote_fresh) {
                 remote_fresh = false;
                 if (live_ok || !checks.empty())
