@@ -33,6 +33,7 @@ struct NodeCap {
     double down_mbit = 0;   ///< download speed in Mbit/s (<= 0: unknown, priced as a LAN)
     /// one-way delay in ms to other nodes, by their name (from either node's list; missing: 0)
     std::map<std::string, double> delay_ms = {};
+    double pf_layer_ms = 0;   ///< prompt time per layer per 1,000 tokens (its GPU, plus the head's work on node 0)
 };
 
 /// What the pool measured with a split (the coordinator, after each request): per node how its layers' time compared
@@ -86,6 +87,14 @@ struct SplitModel {
     int64_t window_rows = 1;      ///< rows a decode window sends each way (the drafts + 1)
     int64_t row_bytes = 51216;    ///< one window row: 12,804 floats in fp32 (half that in bf16)
     bool ring = false;   ///< the last node sends straight back to the coordinator: N crossings a window, not 2(N - 1)
+    int64_t prompt_row_bytes = 40960;   ///< one prompt row: 10,240 floats in fp32 (half that in bf16)
+    int64_t prompt_chunk = 2944;        ///< prompt tokens per chunk (--prefill)
+    int64_t drafter_rows = 32896;       ///< the prompt's last rows that come back for the drafter (0: no drafter)
+    /// The workload a plan is chosen for: the search minimises a request's time, its prompt plus answer_tokens /
+    /// window_tokens decode windows.  The defaults make that one window, which is what it minimised before.
+    int64_t prompt_tokens = 0;
+    int64_t answer_tokens = 1;
+    double window_tokens = 1.0;   ///< tokens a window keeps on average (from the drafts accepted)
     const SplitCalib* calib = nullptr;   ///< measured timings of this pool: used when `usable` for these nodes
     const SplitCalib* failures = nullptr;   ///< its `failed` splits are skipped by auto_split (usable or not)
 };
@@ -103,6 +112,9 @@ struct SplitPlan {
     std::vector<double> node_pred;   ///< the built-in model's ms per window for each node's range
     std::vector<double> node_ms;     ///< ... as predicted for this plan (scaled by the measurements when `measured`)
     bool measured = false;           ///< `ms` rests on this pool's measured timings
+    double decode_tok_s = 0;         ///< window_tokens per `ms`, in tokens per second
+    double prompt_ms = 0;            ///< predicted time to read the workload's prompt
+    double request_ms = 0;           ///< prompt_ms + answer_tokens x ms / window_tokens: what the search minimises
     std::vector<int> order;          ///< (auto_pool) the positions in its `nodes` of the nodes used, in chain order
 };
 

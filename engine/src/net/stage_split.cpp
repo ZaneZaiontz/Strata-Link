@@ -18,16 +18,21 @@ static bool has_link_facts(const std::vector<NodeCap>& nodes) {
     return false;
 }
 
-/// One crossing from `a` to `b` carrying `bytes`: the delay between them (the larger if both give one), the fixed
-/// overhead, and the bytes over the slower of a's upload and b's download.  An unknown speed is 1 GbE's payload rate
-/// (940 Mbit/s, about 117 MB/s); 1 Mbit/s moves 125 bytes per ms.
-static double crossing_ms(const SplitModel& m, const NodeCap& a, const NodeCap& b, double bytes) {
+/// The one-way delay between two nodes (the larger if both give one, 0 if neither does).
+static double delay_between(const NodeCap& a, const NodeCap& b) {
     auto delay = [](const NodeCap& from, const NodeCap& to) {
         const auto it = from.delay_ms.find(to.name);
         return it == from.delay_ms.end() ? 0.0 : it->second;
     };
+    return std::max(delay(a, b), delay(b, a));
+}
+
+/// How long `a` is busy sending `bytes` to `b`: the fixed overhead plus the bytes over the slower of a's upload and
+/// b's download.  An unknown speed is 1 GbE's payload rate (940 Mbit/s, about 117 MB/s); 1 Mbit/s moves 125 bytes
+/// per ms.
+static double send_ms(const SplitModel& m, const NodeCap& a, const NodeCap& b, double bytes) {
     const double mbit = std::min(a.up_mbit > 0 ? a.up_mbit : kLanMbit, b.down_mbit > 0 ? b.down_mbit : kLanMbit);
-    return std::max(delay(a, b), delay(b, a)) + m.hop_overhead_ms + bytes / (mbit * 125.0);
+    return m.hop_overhead_ms + bytes / (mbit * 125.0);
 }
 
 /// A window's crossings in order, as (from, to) node positions: out through every node, then back the same way (a
@@ -45,9 +50,45 @@ static double window_net_ms(const SplitModel& m, const std::vector<NodeCap>& nod
     const auto hops = crossings((int) nodes.size(), m.ring);
     if (!has_link_facts(nodes)) return m.hop_ms * (double) hops.size();
     double ms = 0;
-    for (const auto& [a, b] : hops)
-        ms += crossing_ms(m, nodes[(size_t) a], nodes[(size_t) b], (double) (m.window_rows * m.row_bytes));
+    for (const auto& [a, b] : hops) {
+        const NodeCap &from = nodes[(size_t) a], &to = nodes[(size_t) b];
+        ms += delay_between(from, to) + send_ms(m, from, to, (double) (m.window_rows * m.row_bytes));
+    }
     return ms;
+}
+
+/// The time to read the workload's prompt.  Chunks of `prompt_chunk` tokens go through every node's layers and the
+/// crossings between them, then the rows the drafter reads go back to the coordinator.  Each part (a node's GPU, a
+/// link's sending side) takes the next chunk as soon as it is done with this one, so the slowest part sets the pace
+/// and the others add their time for one chunk; a delay holds a chunk up without keeping its link busy.  Crossings are
+/// priced per link with or without link facts (unknown speeds as a LAN, no delay).
+static double prompt_time(const SplitModel& m, const std::vector<NodeCap>& nodes, const std::vector<int64_t>& layers) {
+    const int ns = (int) nodes.size();
+    const auto hops = crossings(ns, m.ring);
+    const int64_t chunk = std::max<int64_t>(m.prompt_chunk, 1), from_row = m.prompt_tokens - m.drafter_rows;
+    std::vector<double> free_at((size_t) ns + hops.size(), 0.0);
+    double t = 0;
+    for (int64_t start = 0; start < m.prompt_tokens; start += chunk) {
+        const int64_t c = std::min(chunk, m.prompt_tokens - start);
+        const int64_t back = std::max<int64_t>(0, start + c - std::max(start, from_row));
+        size_t part = 0;
+        t = 0;
+        auto run = [&](double busy, double delay) {
+            t = std::max(t, free_at[part]) + busy;
+            free_at[part++] = t;
+            t += delay;
+        };
+        auto cross = [&](size_t h, int64_t rows) {
+            const NodeCap &from = nodes[(size_t) hops[h].first], &to = nodes[(size_t) hops[h].second];
+            run(send_ms(m, from, to, (double) (rows * m.prompt_row_bytes)), delay_between(from, to));
+        };
+        for (int i = 0; i < ns; ++i) {
+            run((double) c / 1000.0 * (double) layers[(size_t) i] * nodes[(size_t) i].pf_layer_ms, 0);
+            if (i + 1 < ns) cross((size_t) i, c);
+        }
+        for (size_t h = (size_t) ns - 1; h < hops.size(); ++h) cross(h, back);
+    }
+    return t;
 }
 
 SplitPlan evaluate_split(const SplitModel& m, const std::vector<NodeCap>& nodes, const std::vector<int64_t>& at) {
@@ -136,6 +177,12 @@ SplitPlan evaluate_split(const SplitModel& m, const std::vector<NodeCap>& nodes,
         p.node_ms[(size_t) i] = cal ? pred * m.calib->scale[(size_t) i] : pred;
         p.ms += p.node_ms[(size_t) i];
     }
+    std::vector<int64_t> layers((size_t) ns);
+    for (int i = 0; i < ns; ++i) layers[(size_t) i] = le_of(i) - lb_of(i);
+    const double n = m.window_tokens > 0 ? m.window_tokens : 1.0;
+    p.decode_tok_s = p.ms > 0 ? n * 1000.0 / p.ms : 0.0;
+    p.prompt_ms = prompt_time(m, nodes, layers);
+    p.request_ms = p.prompt_ms + (double) m.answer_tokens * p.ms / n;
     p.measured = cal;
     p.ok = true;
     return p;
@@ -344,7 +391,7 @@ SplitPlan auto_split(const SplitModel& m, const std::vector<NodeCap>& nodes) {
         SplitPlan p = evaluate_split(m, nodes, at);
         if (!p.ok) { last_why = p.why; return; }
         // ties (within 0.1%): the placement whose busiest node holds the fewest layers above its share
-        if (!best.ok || p.ms < best.ms * 0.999) best = p;
+        if (!best.ok || p.request_ms < best.request_ms * 0.999) best = p;
     };
     std::vector<int64_t> at((size_t) ns - 1);
     if (ns == 2) {
@@ -397,7 +444,7 @@ SplitPlan auto_pool(const SplitModel& m, const std::vector<NodeCap>& nodes) {
             if (!std::is_sorted(rest.begin() + (std::ptrdiff_t) k, rest.end())) continue;
             SplitPlan p = auto_split(m, pool);
             if (!p.ok && !best.ok) best.why = p.why;
-            if (p.ok && (!best.ok || p.ms < best.ms * 0.999)) {
+            if (p.ok && (!best.ok || p.request_ms < best.request_ms * 0.999)) {
                 best = p;
                 best.order = order;
             }

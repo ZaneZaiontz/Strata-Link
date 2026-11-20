@@ -277,6 +277,66 @@ static void test_pool_order() {
     CHECK(slow.ok && slow.order == std::vector<int>({0}) && slow.at.empty());
 }
 
+/// The estimate against the slow-link measurement: two PCs (layers 0-29 and 30-47) through a proxy that adds a
+/// delay and a speed limit each way, fp32 or bf16 rows.  Decode, per workload (a story, code): tokens per window n is
+/// 30 ms over the ms per token that 15 ms of delay each way added to the unshaped run, rows per window is n rounded
+/// up, and the GPU time is the unshaped run's window less its two LAN crossings.  Prompt (4,179 tokens in chunks of
+/// 2,944): the per-layer prompt times are fitted to the LAN run (4.4 s) and the same pair's 30K-token prompt at about
+/// 1,900 tok/s.  Every measured value within 20%.
+static void test_slow_link_measurement() {
+    struct Row { double delay, mbit; bool bf16; double story, code, prompt_s; };
+    const Row rows[] = {{0, 0, false, 61.7, 77.9, 4.4},   {0, 0, false, 62.8, 76.3, 4.5},
+                        {5, 300, false, 42.1, 55.2, 9.6}, {15, 0, false, 29.2, 45.4, 4.4},
+                        {15, 20, false, 11.2, 14.9, 119}, {15, 20, true, 16.4, 22.8, 61},
+                        {40, 0, false, 18.4, 26.9, 0},    {40, 20, false, 8.5, 12.3, 0},
+                        {40, 20, true, 12.1, 16.9, 0}};
+    auto within = [](double predicted, double measured) { return std::fabs(predicted / measured - 1.0) <= 0.2; };
+    for (const Row& r : rows) {
+        SplitModel m;
+        m.row_bytes = r.bf16 ? 25608 : 51216;
+        m.prompt_row_bytes = r.bf16 ? 20480 : 40960;
+        NodeCap main_pc{"main", 0, 0, 0}, worker{"worker", 0, 0, 0};
+        main_pc.delay_ms["worker"] = r.delay;
+        main_pc.up_mbit = main_pc.down_mbit = worker.up_mbit = worker.down_mbit = r.mbit;
+        double predicted[2];
+        const double unshaped[2] = {62.8, 76.3}, delayed[2] = {29.2, 45.4};
+        for (int w = 0; w < 2; ++w) {
+            const double n = 30.0 / (1000.0 / delayed[w] - 1000.0 / unshaped[w]);
+            m.window_tokens = n;
+            m.window_rows = (int64_t) std::ceil(n);
+            const double lan = 2.0 * (1.2 + (double) m.window_rows * 51216.0 / 117500.0);
+            main_pc.layer_ms = worker.layer_ms = (n * 1000.0 / unshaped[w] - lan) / 48.0;
+            predicted[w] = evaluate_split(m, {main_pc, worker}, {30}).decode_tok_s;
+        }
+        m.prompt_tokens = 4179;
+        main_pc.pf_layer_ms = 14.62;
+        worker.pf_layer_ms = 11.73;
+        const double prompt_s = evaluate_split(m, {main_pc, worker}, {30}).prompt_ms / 1000.0;
+        std::printf("delay %2.0f ms, %3.0f Mbit/s, %s: story %5.1f (measured %5.1f), code %5.1f (%5.1f), prompt %6.1f s "
+                    "(%5.1f)\n", r.delay, r.mbit, r.bf16 ? "bf16" : "fp32", predicted[0], r.story, predicted[1], r.code,
+                    prompt_s, r.prompt_s);
+        CHECK(within(predicted[0], r.story) && within(predicted[1], r.code));
+        CHECK(r.prompt_s == 0 || within(prompt_s, r.prompt_s));
+    }
+}
+
+/// A request's time decides: a worker on a 100 Mbit/s link speeds up the answer, but a long prompt sends every row
+/// over that link, so for a 30K-token prompt the coordinator alone is quicker.
+static void test_request_objective() {
+    SplitModel m;
+    NodeCap head{"head", 0, 0, 0.5}, fast{"fast", 0, 0, 0.2};
+    head.pf_layer_ms = 10;
+    fast.pf_layer_ms = 4;
+    fast.up_mbit = fast.down_mbit = 100;
+    m.answer_tokens = 300;
+    const SplitPlan answer = auto_pool(m, {head, fast});
+    CHECK(answer.ok && answer.order.size() == 2 && answer.prompt_ms == 0);
+    CHECK(std::fabs(answer.request_ms - 300 * answer.ms) < 1e-6 && std::fabs(answer.decode_tok_s * answer.ms - 1000) < 1e-6);
+    m.prompt_tokens = 30000;
+    const SplitPlan prompt = auto_pool(m, {head, fast});
+    CHECK(prompt.ok && prompt.order.size() == 1 && std::fabs(prompt.prompt_ms - 30000 * 48 * 10 / 1000.0) < 1e-6);
+}
+
 int main() {
     test_parse_split();
     test_split();
@@ -286,6 +346,8 @@ int main() {
     test_link_cost();
     test_chain_and_ring();
     test_pool_order();
+    test_slow_link_measurement();
+    test_request_objective();
     if (failures) { std::fprintf(stderr, "%d check(s) failed\n", failures); return 1; }
     std::printf("stage_split_test: all checks passed\n");
     return 0;
