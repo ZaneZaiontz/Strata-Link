@@ -297,7 +297,7 @@ main process without it.
 | `STRATA_REMOTE_TIMING=1` | any | per-stage timing lines: each prompt chunk, and every 64 windows (see below) |
 | `STRATA_ADAPT_OVERLAP=1` | any | let the adaptive tier's copies land while the next window runs (opt-in on every PC since 0.1.43.1). On a worker it was not measured faster ([ENGINEERING.md](remote-stage/ENGINEERING.md#after-the-rebase-onto-0143-2026-10-12)) |
 | `STRATA_REMOTE_TIMEOUT_S` | any | seconds a send or receive may block before the link counts as dead (default 300). After the hello, a worker waits for the next message without a limit. The engine's watchdog does not count a send or receive under way, so this is also how long a link that moves nothing can hold a request (see below) |
-| `STRATA_REMOTE_CONNECT_S` | main | seconds the main process keeps trying to connect, every 2 s, while the worker's name does not resolve, nothing listens at its address or the network does not reach it: at its start, and when a request finds the link lost (default 180; 0: one try, with the link's own time-outs). That is the whole wait: each try's connect and the worker's reply to its hello (a worker serving another main process answers once the new one takes it over) get what is left of it, at most `STRATA_REMOTE_TIMEOUT_S` a try (a name with several addresses: 10 s at most for each but the last; the name's lookup itself is not cut short). During a request the main process prints `INFO remote_stage_wait=S` every 10 s meanwhile, so the server does not take the wait for a frozen engine, and a STOP (the client went away) ends the wait at once: that request ends, the main engine stays, and the next request tries again. A refusal (a certificate, the model, the layers, the chunk) is not tried again. A worker down for longer is still found: the server's next request starts the main engine again, which tries anew |
+| `STRATA_REMOTE_CONNECT_S` | main | seconds the main process keeps trying to connect, every 2 s, while the worker's name does not resolve, nothing listens at its address or the network does not reach it: at its start, and when a request finds the link lost (default 180; 0: one try, with the link's own time-outs). That is the whole wait: each try's connect and the worker's reply to its hello (a worker serving another main process answers once the new one takes it over) get what is left of it, at most `STRATA_REMOTE_TIMEOUT_S` a try (a name with several addresses: 10 s at most for each but the last; the name's lookup itself is not cut short). During a request the main process prints `INFO remote_stage_wait=S` every 10 s meanwhile, so the server does not take the wait for a frozen engine, and a STOP (the client went away) ends the wait at once: that request ends, the main engine stays, and the next request tries again. A refusal (a certificate, the model, the layers, the chunk) is not tried again. A worker down for longer is still found: that request ends with the error, the main engine stays, and the next request tries anew |
 | `STRATA_REMOTE_TAKEOVER_S` | worker | seconds the connection served must have had no message read, being read, or a reply going out before a new main process may take the worker over (default 30; 0: never, a new one waits until the old one closes) |
 
 Fixed: a peer that connects but has not finished the TLS handshake and sent its hello within 10 s is dropped; on an idle link, TCP keepalive notices a peer
@@ -323,7 +323,8 @@ part: with `--prompt-cache` that request reads its prompt from token 0, and one 
 loss seen: a worker process that ended or a link that was reset is seen at once, but when the worker's PC vanished
 without a word a request in the first minute or so (before the keepalive notices) waits for its first reply until
 the link's own timeouts end it: the keepalive, or at most `STRATA_REMOTE_TIMEOUT_S`. A link lost in the middle of a
-request ends the main engine, as before, and the server keeps the request and continues it once the engine is back
+request ends that request but not the main engine (with `--pipeline-windows` or `--batch` it still ends the engine),
+and the server keeps the request and continues it
 ([A PC drops in the middle of an answer](#a-pc-drops-in-the-middle-of-an-answer)).
 
 The main engine's watchdog (`STRATA_WATCHDOG_S`) does not count the time a send or receive on the link is under way,
@@ -331,8 +332,8 @@ each one up to `STRATA_REMOTE_TIMEOUT_S`. Over a slow link that time is long: on
 of fp32 rows, about 50 s each way at 20 Mbit/s, and the watchdog used to stop the engine in the middle of a 4K
 prompt. Meanwhile the main process prints `INFO remote_stage_wait=S` every 10 s, so the server's check for a frozen
 engine (`STRATA_ENGINE_STALL_S`) leaves it alone too. A link that moves nothing still ends the request: the send or
-receive times out, the request gets the remote-stage error and a 503, and the next request starts the main engine
-again. Measured through a shaping proxy (15 ms each way, 20 Mbit/s, fp32 rows, default settings): a 4,179-token
+receive times out and the request gets the remote-stage error and a 503 (the runs below were before the main engine
+stayed up after a lost link: it was started again then). Measured through a shaping proxy (15 ms each way, 20 Mbit/s, fp32 rows, default settings): a 4,179-token
 prompt read in 119 s and an 8,478-token one in 190 s, with no watchdog stop; the link cut to 0.001 Mbit/s 30 s into
 the 8,478-token prompt ended that request 293 s later with `remote stage: send failed: Broken pipe` and a 503, and
 the next request was answered 39 s after (the main engine started again). Without the 10 s lines the server had
@@ -347,7 +348,7 @@ the next worker about once a second while its main process is idle; when that li
 again, its PC or the network went), the relay closes its main process's connection, so the main process's next
 request connects again, and the relay links its next worker again at that request's reset. (Without it, that
 request's first message failed at the relay and the main engine ended.) A next worker lost in the middle of a
-request still ends the main engine (the server recovers that request the same way). On Windows a worker's port is bound exclusively (`SO_EXCLUSIVEADDRUSE`), so
+request ends that request as a lost link does (the server recovers it the same way). On Windows a worker's port is bound exclusively (`SO_EXCLUSIVEADDRUSE`), so
 a second worker on the same port fails as it does on Linux.
 
 **Timing lines** (`STRATA_REMOTE_TIMING=1`), what the tuner reads:
@@ -369,12 +370,17 @@ above another card's for the same layers points at clocks (Windows, above).
 ## A PC drops in the middle of an answer
 
 When the link is lost in the middle of a request (a worker that ended, a PC or network that went away, the worker's
-own error) the main engine ends, and so does a main engine that is killed. The server no longer ends the request
-then. It starts the main engine again on a thread, which connects to the worker as at any start (every 2 s for
-`STRATA_REMOTE_CONNECT_S`; the worker's node agent starts a worker that ended again, after 5 s and more), and when the
-engine is ready it continues the same answer: it sends the prompt plus the tokens already written, the way it already
-continues an answer at a thinking budget. The client gets nothing twice and misses nothing. The engine reads that
-prompt from token 0, so a long conversation adds its reading time to the wait.
+own error) the main engine waits for its GPU, ends that request with the error after a line
+`INFO remote_stage_kept=1`, closes the link and stays loaded. The server does not end the request then: it sends the
+prompt plus the tokens already written at once, the way it already continues an answer at a thinking budget, and the
+engine connects to the worker again inside that request (every 2 s for `STRATA_REMOTE_CONNECT_S`; the worker's node
+agent starts a worker that ended again, after 5 s and more). The client gets nothing twice and misses nothing. The
+engine reads that prompt from token 0, so a long conversation adds its reading time to the wait.
+
+A main engine that is killed, a GPU fault, and a main started with `--pipeline-windows` or `--batch` still end the
+engine. The server then starts it again on a thread, which connects as at any start, and continues the answer once it
+is ready. An older server ignores the `INFO` line: it waits 15 s for an end that does not come, then goes on with the
+same engine.
 
 What a client sees meanwhile, about every 5 s:
 
@@ -416,9 +422,20 @@ worker's restart wait is its agent's (5 s, doubling after each end within ten mi
 After that last one the worker was started again: the main engine's start that was still running connected, and the
 next request was answered 4.9 s after the worker listened.
 
+Those runs ended the main engine at every drop. With the main engine staying up, the same pair, model and list (each
+case run as many times as shown; the link cut at a TCP proxy on the main PC that closes both sides and refuses new
+connections while it is cut, no shaping):
+
+| What was dropped | Main engine | What it got | Drop to the answer going on |
+|---|---|---|---|
+| the link cut for 2 s in the middle of the answer (3 runs) | the same process | 3 status chunks, then the rest | 3.2-3.3 s (2 s of it the cut) |
+| the link cut for 2 s 3-6 s into reading a 13,844-token prompt (4 runs) | the same process | 7 status chunks, then the answer | first token at 13.0-16.1 s (7.6-7.9 s without a drop) |
+| the worker engine (`kill -9`) in the middle of the answer, agent wait 5 s, no proxy | the same process | 7 status chunks, then the rest | 43.4 s |
+| the link cut and left cut | the same process | 18 status chunks, then the error event after 12 items | the request ended 179 s after the cut (`STRATA_REMOTE_CONNECT_S`); the next request after the link came back was answered in 3.1 s |
+
 ## Overlapping the decode windows (`--pipeline-windows 2`)
 
-`--pipeline-windows 2` works on the main process: the decode loop of [MULTI_GPU.md](MULTI_GPU.md) runs with two
+`--pipeline-windows 2` works on the main process (a link lost in the middle of a request still ends a main started with it): the decode loop of [MULTI_GPU.md](MULTI_GPU.md) runs with two
 stages, layers 0 to K-1 as the front stage and the worker followed by this PC's head as the last one. While the
 worker and the head verify window N, layers 0 to K-1 already run window N+1 on the guess that N is accepted whole;
 a wrong guess is undone on this PC (its layers' recurrent state comes back from a snapshot). The worker only ever
@@ -821,7 +838,7 @@ window, a split that decodes as fast as without it, and ~32K-token prompts read 
 | `the main process's context (N) or window (T) is larger than this worker's` | the worker's `--max-context` and `--spec` must be at least the main process's |
 | `ArenaExpertSource: a layer range needs a native pack read from its GGUF` | a pack directory with `experts.bin`: use a copy without it; drop `--shared-expert-arena` |
 | `strata generate: remote stage: it does not support ...` | remove that flag (see above) |
-| a request fails with a link error (`remote stage: ...`) or the worker's own (`remote stage (worker): ...`) | the server answers it with 503 `server_error` and `Retry-After: 30` (an error event once a stream has started), not a 400: the request was not at fault. The link was lost in the middle of the request and the engine was not back within `"recover_wait_s"` (300 s; [A PC drops in the middle of an answer](#a-pc-drops-in-the-middle-of-an-answer)), it was lost again before one more token, or `"recover_wait_s"` is 0. The main engine ends with that error at once; the next request starts it again (the server tries three times, 15 s apart) and it connects anew (taking the worker over from its old connection once that has been silent for `STRATA_REMOTE_TAKEOVER_S`). If the worker itself ended (a stall report, or it exited), its agent starts it again after 5 s and more (`GET /info`, `"ports"`); the log of its last run that listened is `stage-worker-PORT.prev.log`. Without an agent, or with `"restart": false`, start it again by hand |
+| a request fails with a link error (`remote stage: ...`) or the worker's own (`remote stage (worker): ...`) | the server answers it with 503 `server_error` and `Retry-After: 30` (an error event once a stream has started), not a 400: the request was not at fault. The link was lost in the middle of the request and the engine had not connected again and gone on within `"recover_wait_s"` (300 s; [A PC drops in the middle of an answer](#a-pc-drops-in-the-middle-of-an-answer)) or its own `STRATA_REMOTE_CONNECT_S` (180 s), it was lost again before one more token, or `"recover_wait_s"` is 0. The main engine stays loaded (with `--pipeline-windows` or `--batch` it ends, and the next request starts it again: the server tries three times, 15 s apart); the next request connects anew (taking the worker over from its old connection once that has been silent for `STRATA_REMOTE_TAKEOVER_S`). If the worker itself ended (a stall report, or it exited), its agent starts it again after 5 s and more (`GET /info`, `"ports"`); the log of its last run that listened is `stage-worker-PORT.prev.log`. Without an agent, or with `"restart": false`, start it again by hand |
 | the main process waits at its start, then `receive failed: timed out (no reply to the hello)` (with `STRATA_REMOTE_CONNECT_S=0`: `receive failed: timed out`) | the worker took the connection but did not answer within `STRATA_REMOTE_CONNECT_S` (180 s; with 0, `STRATA_REMOTE_TIMEOUT_S`): it is stuck in a message, or still serves another main process (taken over once it has been silent for `STRATA_REMOTE_TAKEOVER_S`, 30 s); a stuck worker ends by itself after `STRATA_WATCHDOG_S` (60 s) |
 | two main processes take one worker from each other, requests failing on both | two main PCs (or two servers) point `--remote-stage` at the same worker: a worker serves one main process, and a second one waits until the first has been silent for `STRATA_REMOTE_TAKEOVER_S` (between its requests), then takes it over; so they take turns, and every request starts by connecting again |
 | decode slower than expected on Linux | look at `decode expert cache hit rate` on every PC; keep the adaptive tier on everywhere (do not set `--adapt-every 0`) |

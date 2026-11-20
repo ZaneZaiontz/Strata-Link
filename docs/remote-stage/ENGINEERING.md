@@ -139,9 +139,17 @@ seconds so far) on stdout every 10 s for the whole wait, including a try that bl
 connect returns: the server's frozen-engine check (`ENGINE_STALL_S`, 90 s without a line, CPU or I/O) would end the
 engine first, and the request would get "frozen" instead of the link's error. Not at the engine's start: the server
 then waits for READY and reads INFO lines as settings. A worker
-down for longer is still found: the engine ends with the error, and the server's next request starts it again,
-which tries anew. A link lost in the middle of a request still ends the main engine. The server keeps that request:
-`Service._recover` starts the engine again on a thread while the client hears a `strata_status` every 5 s, then the
+down for longer is still found: the request ends with the error, the engine stays, and the next request tries
+anew. A link lost in the middle of a request, or the worker's own error, ends that request on the serial paths (a
+decode window, its commit, a prompt chunk, a turn checkpoint): `remote_survivable` in `generate.cpp` waits for the GPU
+(a prompt chunk's own layers may still run), prints `INFO remote_stage_kept=1` before the `ERR`, and closes the link;
+the engine stays (without the wait for the GPU, the first cut in the middle of a prompt was followed by an illegal
+memory access reported at the next request's K/V reset; with it, seven cuts there were not. The prompt path also kept
+the failed chunk's error, so the next prompt read failed with it until
+`Prefill::drain_pipeline` cleared `recv_err_`: both seen on GPUs). A GPU fault,
+`--pipeline-windows` and `--batch` still end it. The server keeps that request:
+`Service._recover` starts the engine again on a thread if it ended (a kept one is ready at once: the pump does not
+mark it as leaving, so `settle_stage_exit` does not wait) while the client hears a `strata_status` every 5 s, then the
 pass loop continues the answer with the prompt plus the tokens so far, up to `"recover_wait_s"` (300 s;
 [REMOTE_STAGE.md](../REMOTE_STAGE.md#a-pc-drops-in-the-middle-of-an-answer)). Past that, or with it at 0, the server
 answers an `ERR remote stage: ...`, and the worker's own `ERR remote stage (worker): ...`, with 503 `server_error` and
@@ -1508,7 +1516,7 @@ All three answered the picture check.
   done. So far the start of every benchmark answer (the 100-160 characters the benchmark keeps) was read: coherent and
   on topic in every configuration.
 - **Reconnecting** in the middle of a request (a link lost between requests is made again at the next request's
-  start; one lost mid-request ends the main engine, and the server starts it again and continues the request). Faults run on GPUs: two PCs,
+  start; one lost mid-request ends that request, the main engine stays, and the server continues the request). Faults run on GPUs: two PCs,
   Linux on both ([The recovery's open points](#the-recoverys-open-points-2026-10-13)); a relay's next worker, a
   network partition and a Windows PC on either side were not; conversation checkpoints across stages
   ([CHECKPOINTS.md](CHECKPOINTS.md): built, opt-in with `--prompt-cache N`, checked on two GPUs; a relay is not

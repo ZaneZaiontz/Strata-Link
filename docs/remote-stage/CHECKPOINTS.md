@@ -100,7 +100,10 @@ Failure classes (not every save failure can be skipped):
 - State or transport: a position mismatch, a pending deferred Commit error, a CUDA / copy failure, a relay's
   downstream error, a link broken in the middle of a request. The worker's session can no longer be trusted, so the
   main prints `ERR` and the engine exits, as it does for a failed Reset; the server starts it again, the worker sees
-  a disconnect and clears its store, and the next request reads from 0. A link lost at a request's start (its
+  a disconnect and clears its store, and the next request reads from 0. A link broken in the middle of a request, or
+  an error the worker sent back, ends only the request on the serial paths: the main prints
+  `INFO remote_stage_kept=1` and `ERR`, closes the link and stays loaded, the worker sees the disconnect as above, and
+  the next request connects again and reads from 0 ([After a reconnect](#after-a-reconnect)). A link lost at a request's start (its
   CkptRestore included) is made again instead: [After a reconnect](#after-a-reconnect).
 - CkptRestore of an id the worker does not have (should not happen; a store bug or a restarted relay): the main falls
   back to reading from 0 within the same request (below). A missing id is the only non-fatal restore error; the
