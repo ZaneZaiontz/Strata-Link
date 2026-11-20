@@ -9078,6 +9078,7 @@ bool Prefill::drain_pipeline(std::string& err) {
             ok = false;
         }
     }
+    recv_err_.clear();
 
     if (next_ != nullptr) {
         std::string tail_err;
