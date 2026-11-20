@@ -7290,11 +7290,17 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
             // The current hand-off slot was used two chunks ago.
             float* h = m.hand[hand_buf_];
             // remote-stage: the sends go out in order, one at a time - the last chunk's first (so the one two chunks
-            // ago, which used this slot, is out too)
+            // ago, which used this slot, is out too).  When that send failed, the chunk ends once this card finished
+            // what was queued (as at a STOP): the caller, a main process or a relay worker that stays up, hands the
+            // lent slots back next
             const auto t_layers = Clock::now();
             if (remote_send && send_run_.valid()) {
                 const SendWait wait(send_allow_s_);
-                if (!send_run_.get()) { err = send_err_; return false; }
+                if (!send_run_.get()) {
+                    (void) cudaDeviceSynchronize();
+                    err = send_err_;
+                    return false;
+                }
             }
             const auto t_sent = Clock::now();
             // (0 with remote_send: a remote stage's prompt path has no local next stage, and only that one makes the
