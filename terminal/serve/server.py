@@ -6670,6 +6670,7 @@ def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel
                 # as a long prompt takes to read (a 45K-token read is 34 s here, a 190K one minutes); an empty delta
                 # is a real event it can count, and every OpenAI client ignores it.
                 beat = time.monotonic()
+                yield from first()
                 yield chunk({})
             else:
                 yield None                         # the SSE comment between two beats, as before
