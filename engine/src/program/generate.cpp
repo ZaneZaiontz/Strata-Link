@@ -24069,7 +24069,7 @@ int main(int argc, char** argv) {
             if (!keep_sync()) { std::printf("ERR %s\n", err.c_str()); return 1; }
             const double decode_ms = std::chrono::duration<double, std::milli>(Clock::now() - d0).count();
             dc_last_end = Clock::now();   // the busy run goes on when the next request starts within CostLearner::kIdleS of this
-            if (use_df2 && o.draft_auto && bandit_key != 0 && produced_n >= 48 && decode_ms > 0.0) {
+            if (use_df2 && o.draft_auto && bandit_key != 0 && produced_n >= 48 && decode_ms > 0.0 && remote_lost.empty()) {
                 DraftBandit& b = bandit[bandit_key];
                 const int w = req_df2 ? 1 : 0;
                 const double tps = 1000.0 * (double) produced_n / decode_ms;
