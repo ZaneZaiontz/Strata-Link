@@ -1,5 +1,6 @@
 // src/net/stage_link.cpp - see include/strata/net/stage_link.hpp.
 #include "strata/net/stage_link.hpp"
+#include "strata/core/progress.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -390,6 +391,7 @@ void tune_socket(sock_t fd) {
 bool send_all(sock_t fd, const void* p, size_t n, std::string& err) {
     const char* c = (const char*) p;
     while (n > 0) {
+        const strata::core::LinkCall call;
         const int k = (int) std::min<size_t>(n, (size_t) 1 << 30);   // Winsock counts in int
         const long long w = ::send(fd, c, k, kSendFlags);
         if (w < 0) {
@@ -418,6 +420,7 @@ constexpr size_t kRecvBytes = (size_t) 256 << 10;    // a read's most (a buffer 
 bool recv_some(sock_t fd, TlsSession& tls, std::vector<char>& rx, std::string& err) {
     if (rx.size() < kRecvBytes) rx.resize(kRecvBytes);
     for (;;) {
+        const strata::core::LinkCall call;
         const long long r = ::recv(fd, rx.data(), (int) rx.size(), 0);
         if (r == 0) { err = "remote stage: the peer closed the connection"; return false; }
         if (r < 0) {

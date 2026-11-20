@@ -16011,7 +16011,7 @@ int main(int argc, char** argv) {
             const char* wio = std::getenv("STRATA_WATCHDOG_IO_S");
             const int io_limit = wio ? std::atoi(wio) : limit * 10;
             if (limit > 0)
-                std::thread([limit, io_limit] {
+                std::thread([limit, io_limit, remote_main] {
                     strata::platform::name_this_thread("strata-watchdog");
                     strata::aux_cpus::pin_current_thread();
                     strata::core::Progress& p = strata::core::progress();
@@ -16021,15 +16021,26 @@ int main(int argc, char** argv) {
                     uint64_t io_last = file_tier_activity();
                     auto io_active_at = since;   // the last second the file tier was busy
                     bool io_noted = false;
+                    bool link_noted = false;
+                    auto said_at = since;
                     for (;;) {
                         std::this_thread::sleep_for(std::chrono::seconds(1));
                         const auto now = std::chrono::steady_clock::now();
                         const uint64_t b = p.beats.load();
-                        if (!p.busy.load() || b != last) { last = b; ticks_at = p.ticks.load(); since = now; io_since = now; io_active_at = now; io_noted = false; io_last = file_tier_activity(); continue; }
+                        if (!p.busy.load() || b != last) { last = b; ticks_at = p.ticks.load(); since = now; io_since = now; io_active_at = now; io_noted = false; link_noted = false; io_last = file_tier_activity(); continue; }
                         {   // sampled every second, also during the first `limit` seconds, so a busy file tier is seen
                             const uint64_t a = file_tier_activity();
                             if (a >= io_last + 16) io_active_at = now;   // 16 = faults + MiB read in a second: busy
                             io_last = a;
+                        }
+                        const bool link_waiting = strata::core::progress_link_waiting(strata::core::progress_now_ms(),
+                                                                                      strata::net::io_timeout_s() + limit);
+                        if (remote_main && link_waiting && now - since >= std::chrono::seconds(10) &&
+                            now - said_at >= std::chrono::seconds(10)) {
+                            said_at = now;
+                            std::printf("INFO remote_stage_wait=%lld\n",
+                                        (long long) std::chrono::duration_cast<std::chrono::seconds>(now - since).count());
+                            std::fflush(stdout);
                         }
                         if (now - since < std::chrono::seconds(limit)) continue;
                         if (io_limit > limit && now - io_since < std::chrono::seconds(io_limit)) {
@@ -16047,6 +16058,16 @@ int main(int argc, char** argv) {
                         }
                         // a blocking step's explicit allowance (session files): still within it, not yet stuck
                         if (strata::core::progress_now_ms() < p.allow_until_ms.load()) continue;
+                        if (link_waiting) {
+                            if (!link_noted) {
+                                link_noted = true;
+                                std::fprintf(stderr, "strata serve: no step finished for %d s, but a read or write on the remote "
+                                                     "stage's link is under way (a slow link): waiting while it moves, each "
+                                                     "read or write up to STRATA_REMOTE_TIMEOUT_S (%d s)\n",
+                                             limit, strata::net::io_timeout_s());
+                            }
+                            continue;
+                        }
                         std::fprintf(stderr, "strata serve: no progress for %d s during a request (%s) - stopping "
                                              "the engine so the server starts it again (issue #29)%s\n",
                                      limit, stage_text().c_str(),

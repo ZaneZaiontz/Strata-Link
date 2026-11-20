@@ -30,6 +30,8 @@
 //   9. STRATA_REMOTE_TAKEOVER_S=0: a new main process waits however long the served one is silent; a connection the
 //      worker accepted while the served one was idle is closed when the served one sends again (and does not take
 //      over at its next idle time); the idle time starts when a slow reply (a relay's) is out, not when it began;
+//      a read waiting for a slow reply is the watchdog's link allowance (core::LinkCall) while under way, within
+//      its limit only;
 //  10. StageClient::alive, the main process's check at a request's start (and a relay's of its next worker): true on
 //      an idle served link (no TLS session tickets come unasked), and it reads nothing (the next reply is in step);
 //      false, as a lost link, once the worker's end closed it (a take-over by another main process, the worker
@@ -81,6 +83,7 @@
 //      reply allowed longer than STRATA_REMOTE_TIMEOUT_S is read as any other; a worker without the handlers lists
 //      no bit, answers both with an error that is not the missing-id one and reads at most 64 ids.
 // The handlers run on the worker's serving thread: what they share with the test is behind a mutex or atomic.
+#include "strata/core/progress.hpp"
 #include "strata/kernels/bf16_bits.hpp"
 #include "strata/net/stage_ckpt_store.hpp"
 #include "strata/net/stage_link.hpp"
@@ -1309,6 +1312,30 @@ int main(int argc, char** argv) {
     b6.cl.close();
     a.close();
     wk6.stop();
+
+    // the watchdog's allowance for the link: a read waiting for the slow reply is under way, within its limit only
+    Worker wk6w;
+    if (!wk6w.start(slow, buf)) {
+        std::printf("stage_link_test: no loopback port to listen on\n");
+        return 1;
+    }
+    check(greet_with(a, wk6w.where, hello_of()) && a.reset({}, err), "a main for the link's watchdog allowance");
+    std::atomic<bool> waiting{false}, bounded{false};
+    std::thread probe([&] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(700));
+        const int64_t now = strata::core::progress_now_ms();
+        waiting = strata::core::progress_link_waiting(now, 2);
+        bounded = !strata::core::progress_link_waiting(now + 2000, 2);
+    });
+    const bool w_ok = a.prefill_send(ptok, 2, 0, 0, pin, kD, 0, err) && a.prefill_recv(pout, kD, 2, 0, err);
+    probe.join();
+    for (int i = 0; i < 100 && strata::core::progress_link_waiting(strata::core::progress_now_ms(), 2); ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    check(w_ok && waiting.load() && bounded.load() &&
+              !strata::core::progress_link_waiting(strata::core::progress_now_ms(), 2),
+          "a read waiting 1.5 s for a reply is the link's wait, not past its limit, and none once the reply is in");
+    a.close();
+    wk6w.stop();
 
     // 10. alive(): the link between requests, checked with nothing sent and without blocking
     Worker wk7;
