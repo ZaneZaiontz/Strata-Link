@@ -11,6 +11,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <string>
 #include <utility>
 #include <vector>
@@ -28,6 +29,10 @@ struct NodeCap {
     /// the most its experts and those K/V copies may pin together (0: no limit).  Windows pins about half of the
     /// RAM in all; a worker's whole arena is pinned, so this is what runs out first there.
     int64_t pin_room = 0;
+    double up_mbit = 0;     ///< upload speed in Mbit/s (<= 0: unknown, priced as a LAN)
+    double down_mbit = 0;   ///< download speed in Mbit/s (<= 0: unknown, priced as a LAN)
+    /// one-way delay in ms to other nodes, by their name (from either node's list; missing: 0)
+    std::map<std::string, double> delay_ms = {};
 };
 
 /// What the pool measured with a split (the coordinator, after each request): per node how its layers' time compared
@@ -75,6 +80,11 @@ struct SplitModel {
     double miss_ms = 190.0;   ///< one unit of routed mass on the CPU pool, per window
     double hop_ms = 1.5;      ///< one network crossing per window (constant per extra node)
     int64_t first_min = 2;    ///< the coordinator keeps at least layers 0 and 1 (the PLE runs at layer 1)
+    /// With link facts (any node's speed or delay), a crossing from node i to node j costs its delay, plus
+    /// `hop_overhead_ms`, plus its bytes over the slower of i's upload and j's download.  Without any, `hop_ms`.
+    double hop_overhead_ms = 1.2;
+    int64_t window_rows = 1;      ///< rows a decode window sends each way (the drafts + 1)
+    int64_t row_bytes = 51216;    ///< one window row: 12,804 floats in fp32 (half that in bf16)
     const SplitCalib* calib = nullptr;   ///< measured timings of this pool: used when `usable` for these nodes
     const SplitCalib* failures = nullptr;   ///< its `failed` splits are skipped by auto_split (usable or not)
 };

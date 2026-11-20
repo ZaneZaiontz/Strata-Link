@@ -207,12 +207,47 @@ static void test_split_kv_and_failures() {
     std::remove(path.c_str());
 }
 
+/// A window's network time from link speeds and delays: Mbit/s against bytes, bf16 rows, unknown or nonsense speeds
+/// priced as a LAN, a delay given by either node, and no link facts at all meaning the old constant per crossing.
+static void test_link_cost() {
+    SplitModel m;
+    m.hop_overhead_ms = 0;
+    const NodeCap main_pc{"main", 0, 0, 0.5}, worker{"worker", 0, 0, 0.5};
+    auto net = [&](const NodeCap& a, const NodeCap& b) { return evaluate_split(m, {a, b}, {30}).ms - 24.0; };
+    auto near = [](double x, double want) { return std::fabs(x - want) < 1e-9; };
+    const double lan_row = 51216.0 / 117500.0;
+    CHECK(near(net(main_pc, worker), 2.0 * m.hop_ms));
+    NodeCap a = main_pc, b = worker;
+    a.up_mbit = a.down_mbit = b.up_mbit = b.down_mbit = 20;
+    CHECK(near(net(a, b), 2.0 * 20.4864));
+    m.window_rows = 4;
+    CHECK(near(net(a, b), 8.0 * 20.4864));
+    m.window_rows = 1;
+    m.row_bytes = 25608;
+    CHECK(near(net(a, b), 20.4864));
+    m.row_bytes = 51216;
+    a = main_pc;
+    a.up_mbit = 20;
+    b = worker;
+    b.down_mbit = -5;
+    CHECK(near(net(a, b), 20.4864 + lan_row));
+    a.up_mbit = 940;
+    CHECK(near(net(a, b), 2.0 * lan_row));
+    a = main_pc;
+    a.delay_ms["worker"] = 15;
+    m.hop_overhead_ms = 1.2;
+    CHECK(near(net(a, worker), 2.0 * (15 + 1.2 + lan_row)));
+    b.delay_ms["main"] = 15;
+    CHECK(near(net(main_pc, b), 2.0 * (15 + 1.2 + lan_row)));
+}
+
 int main() {
     test_parse_split();
     test_split();
     test_rank_for_range();
     test_measured_split();
     test_split_kv_and_failures();
+    test_link_cost();
     if (failures) { std::fprintf(stderr, "%d check(s) failed\n", failures); return 1; }
     std::printf("stage_split_test: all checks passed\n");
     return 0;

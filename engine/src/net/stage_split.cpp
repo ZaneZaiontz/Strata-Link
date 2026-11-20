@@ -8,6 +8,45 @@
 
 namespace strata::pool {
 
+static constexpr double kLanMbit = 940.0;
+
+/// True when any node gives a link speed or a delay: the crossings are then priced per link.
+static bool has_link_facts(const std::vector<NodeCap>& nodes) {
+    for (const NodeCap& n : nodes)
+        if (n.up_mbit > 0 || n.down_mbit > 0 || !n.delay_ms.empty()) return true;
+    return false;
+}
+
+/// One crossing from `a` to `b` carrying `bytes`: the delay between them (the larger if both give one), the fixed
+/// overhead, and the bytes over the slower of a's upload and b's download.  An unknown speed is 1 GbE's payload rate
+/// (940 Mbit/s, about 117 MB/s); 1 Mbit/s moves 125 bytes per ms.
+static double crossing_ms(const SplitModel& m, const NodeCap& a, const NodeCap& b, double bytes) {
+    auto delay = [](const NodeCap& from, const NodeCap& to) {
+        const auto it = from.delay_ms.find(to.name);
+        return it == from.delay_ms.end() ? 0.0 : it->second;
+    };
+    const double mbit = std::min(a.up_mbit > 0 ? a.up_mbit : kLanMbit, b.down_mbit > 0 ? b.down_mbit : kLanMbit);
+    return std::max(delay(a, b), delay(b, a)) + m.hop_overhead_ms + bytes / (mbit * 125.0);
+}
+
+/// A decode window's crossings in order, as (from, to) node positions: out through every node, then back the same way.
+static std::vector<std::pair<int, int>> crossings(int ns) {
+    std::vector<std::pair<int, int>> hops;
+    for (int i = 0; i + 1 < ns; ++i) hops.push_back({i, i + 1});
+    for (int i = ns - 1; i > 0; --i) hops.push_back({i, i - 1});
+    return hops;
+}
+
+/// The network's ms per decode window: every crossing priced per link, or `hop_ms` each without link facts.
+static double window_net_ms(const SplitModel& m, const std::vector<NodeCap>& nodes) {
+    const auto hops = crossings((int) nodes.size());
+    if (!has_link_facts(nodes)) return m.hop_ms * (double) hops.size();
+    double ms = 0;
+    for (const auto& [a, b] : hops)
+        ms += crossing_ms(m, nodes[(size_t) a], nodes[(size_t) b], (double) (m.window_rows * m.row_bytes));
+    return ms;
+}
+
 SplitPlan evaluate_split(const SplitModel& m, const std::vector<NodeCap>& nodes, const std::vector<int64_t>& at) {
     SplitPlan p;
     p.at = at;
@@ -86,7 +125,7 @@ SplitPlan evaluate_split(const SplitModel& m, const std::vector<NodeCap>& nodes,
     p.node_pred.assign((size_t) ns, 0.0);
     p.node_ms.assign((size_t) ns, 0.0);
     const bool cal = m.calib != nullptr && m.calib->usable((size_t) ns);
-    p.ms = cal ? m.calib->fixed_ms + m.calib->net_ms : m.hop_ms * (double) (ns - 1) * 2.0;
+    p.ms = cal ? m.calib->fixed_ms + m.calib->net_ms : window_net_ms(m, nodes);
     for (int i = 0; i < ns; ++i) {
         const double pred = (double) (le_of(i) - lb_of(i)) * nodes[(size_t) i].layer_ms +
                             (total > 0 ? m.miss_ms * node_miss[(size_t) i] / total : 0.0);
