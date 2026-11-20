@@ -22,7 +22,7 @@ from unittest import mock
 
 from serve import stages
 from serve.frontend import ChatTemplate
-from serve.server import ByteTokenizer, MockEngine, Service, serve
+from serve.server import ByteTokenizer, MockEngine, RemoteStageLost, Service, serve
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 import stage_node as sn  # noqa: E402
@@ -1204,6 +1204,10 @@ for line in sys.stdin:
     if line.startswith("QUIT"):
         break
     if line.startswith(("GEN", "BGEN")):
+        if "--kept-lost-twice" in sys.argv and state.exists() and state.read_text() == "lost":
+            state.write_text("lost twice")
+            print("INFO remote_stage_kept=1\nERR remote stage: the peer closed the connection", flush=True)
+            continue
         if not state.exists():   # the first request finds the link gone, and the engine ends
             state.write_text("lost")
             if "--kept" in sys.argv:
@@ -1316,6 +1320,24 @@ class EngineWiring(unittest.TestCase):
                 self.assertIs(self.e.proc, old)
                 self.assertIsNone(old.poll())
                 self.assertIsNone(self.e.stage_leaving)
+
+    def test_a_kept_engine_that_fails_to_connect_again_ends_the_request(self):
+        """The request continued on a kept engine finds the link lost again before one more token: it ends with that
+        error, and the engine stays loaded for the next request, which the same process answers."""
+        self.svc.engine.close()
+        self.e = self.svc.engine = self.start("--kept", "--kept-lost-twice")
+        self.state.unlink(missing_ok=True)
+        self.svc.recover_wait_s = 30
+        old, events = self.e.proc, []
+        with self.assertRaises(RemoteStageLost):
+            for ev in self.svc.run([1], False, [], 8, {}, threading.Event()):
+                events.append(ev)
+        self.assertTrue([x for kind, x in events if kind == "ping" and x and x["state"] == "recovering"])
+        self.assertEqual(self.state.read_text(), "lost twice")
+        self.assertEqual(self.request()[-1][1]["completion_tokens"], 1)
+        self.assertIs(self.e.proc, old)
+        self.assertIsNone(old.poll())
+        self.assertIsNone(self.e.stage_leaving)
 
     def test_restart_before_the_first_look(self):
         """The Monitor opened after the engine was started again: that start's link is a reconnect all the same."""

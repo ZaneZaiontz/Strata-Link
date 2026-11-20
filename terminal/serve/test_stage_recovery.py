@@ -6,11 +6,13 @@ waits for the engine and continues the same answer, against fake engines (no GPU
 from __future__ import annotations
 
 import json
+import threading
 import time
 import unittest
 import urllib.error
 import urllib.request
 from pathlib import Path
+from unittest import mock
 
 from serve.frontend import ChatTemplate
 from serve.server import RECOVERING, ByteTokenizer, EngineDied, MockEngine, RemoteStageLost, Service, serve
@@ -237,6 +239,29 @@ class Recovery(unittest.TestCase):
         content, chunks = self.streamed()
         self.assertEqual(chunks[-1]["error"]["message"], LOST)
         self.assertEqual(self.engine.restarts, 1)
+
+    def test_a_client_that_leaves_while_it_waits_hands_the_turn_to_the_start(self):
+        """Cancelled during the wait, or gone at a status ping (the stream closed): the request stops waiting at once,
+        as "cancel" when cancelled, and the turn stays held until the engine's start is over."""
+        with mock.patch("serve.server.PREFILL_BEAT_S", 0.05):
+            for close in (False, True):
+                with self.subTest(close=close):
+                    self.start(DroppingEngine(ANSWER, drops=[100], restart_s=1.0))
+                    cancel = threading.Event()
+                    run = self.svc.run([1], False, [], 2000, {}, cancel)
+                    next(e for e in run if e[0] == "ping" and e[1])
+                    if close:
+                        run.close()
+                    else:
+                        cancel.set()
+                        self.assertEqual(list(run)[-1][1]["finish"], "cancel")
+                    self.assertTrue(self.svc.fifo.locked())
+                    self.assertEqual(self.engine.restarts, 0)
+                    deadline = time.monotonic() + 5
+                    while self.svc.fifo.locked() and time.monotonic() < deadline:
+                        time.sleep(0.05)
+                    self.assertFalse(self.svc.fifo.locked())
+                    self.assertEqual(self.engine.restarts, 1)
 
     def test_a_kept_engine_that_waits_for_its_worker_is_stopped_at_the_limit(self):
         """The engine stays up after the drop, and the continued request waits for a worker that never comes back: it
