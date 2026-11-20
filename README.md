@@ -185,6 +185,24 @@ Two or three cards of the same make in one PC can share a model ([multi-GPU](doc
 
 Run **`strata connect`** to see setup instructions for your tool. [Connection guide](docs/TERMINAL_LAUNCH.md#connect-your-apps-strata-connect).
 
+## Credits
+
+- **Strata** is by [Niko1221](https://github.com/Niko1221) and the Strata contributors:
+  [Niko1221/Strata](https://github.com/Niko1221/Strata). Strata Link is built on it. Model and library credits:
+  [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md#credits).
+- **The remote stage** is by [lask3802](https://github.com/lask3802): the split across PCs and everything built on it,
+  including its TLS, the node agent, `stage_ship`, the tuner, checkpoints, parking and session files. It was proposed
+  upstream as [PR #1748](https://github.com/Niko1221/Strata/pull/1748), and this fork comes from
+  [lask3802/Strata-Link](https://github.com/lask3802/Strata-Link).
+- **The layer-major prompt-reading fix** for 256-expert models is by [fragtion](https://github.com/fragtion), from
+  [StrataPool](https://github.com/fragtion/StrataPool).
+- [YukihiroHemmi](https://github.com/YukihiroHemmi) (Arinko) read the link's code while building a SYCL worker, and
+  [their report](https://github.com/Niko1221/Strata/pull/1748#issuecomment-6138154786) led to the frame-size hardening
+  ([details](docs/remote-stage/ENGINEERING.md#a-readers-report-what-a-peer-can-make-a-process-do-2026-10-13)).
+- [edowadolui-lab](https://github.com/edowadolui-lab) ran a Radeon 8060S worker with an RTX 5070 main PC and
+  [reported it](https://github.com/Niko1221/Strata/pull/1748#issuecomment-6332714185).
+- [ZaneZaiontz](https://github.com/ZaneZaiontz) maintains this fork and merges upstream releases into it.
+
 <a id="guides"></a>
 <a id="how-fast-is-it"></a>
 <a id="how-does-it-work"></a>
