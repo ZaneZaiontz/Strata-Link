@@ -1,0 +1,416 @@
+// include/strata/net/stage_link.hpp - a layer split's later stage on another machine, over TCP.
+//
+// The main process runs layers [0, K) and the head; a worker process (strata --serve --stage-worker PORT
+// --stage-begin K, on another PC) runs layers [K, n_layers) without the head.  They exchange exactly what an
+// in-process layer split hands from one GPU to the next:
+//   - a verify window: T rows of Verifier::handoff_floats (the residual streams, the pending write and the inject)
+//     each way, then the accepted count (one way, no reply);
+//   - a prompt chunk: T rows of hc * n_embd floats (the residual streams) each way.
+// The worker keeps its own session (its layers' K/V, GDN state), expert cache and CPU expert pool; the main process
+// sends a reset at every fresh prompt.  With an explicit --prompt-cache on the main process the worker also keeps
+// its layers' part of each conversation checkpoint under the main process's id (CkptSave / CkptRestore,
+// docs/remote-stage/CHECKPOINTS.md).  More than two stages: a relay worker (--stage-end K2 --stage-next HOST:PORT)
+// runs [K, K2) and hands its rows to the next worker as the main process hands them to it; the next worker's reply
+// is its reply (main -> A -> B -> A -> main), so the main process sees one worker either way.  Prompt chunks are pipelined: the main process sends chunk c + 1 while the
+// worker reads chunk c (the worker receives on its own thread into two buffers), and takes the replies in order on
+// another thread.  Images (--vision on both sides): a request with a picture rotates its tokens by M-RoPE positions
+// that are not the cell index, so the main process sends its position table before the request (and a reset to the
+// identity before the next text request); the worker's layers read their own copy.  POSIX sockets on Linux, Winsock on
+// Windows.  Every connection is TLS 1.3, and each end accepts only a peer whose certificate it holds (stage_tls.hpp):
+// the main process's worker is one of its PCs, and so is a worker's main process.  The messages below are the
+// records' contents.
+#pragma once
+
+#include "strata/net/stage_tls.hpp"
+
+#include <array>
+#include <atomic>
+#include <chrono>
+#include <cstddef>
+#include <cstdint>
+#include <deque>
+#include <functional>
+#include <future>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <vector>
+
+namespace strata::net {
+
+inline constexpr uint32_t kStageMagic = 0x4d525453u;   // "STRM"
+// 9: engine 0.1.62, whose prompt chunks and loans differ from 0.1.59's (the same messages)
+// 8: TLS 1.3, both ends' certificates (7: a token in the hello; upstream's PR numbers the same change 5 -> 6)
+inline constexpr uint32_t kStageProtocol = 9;
+/// Conversation checkpoints (docs/remote-stage/CHECKPOINTS.md): the most parts a worker keeps; a main process whose
+/// hello asks for more is refused
+inline constexpr int32_t kStageCkptMax = 64;
+/// the start of the worker's CkptRestore error for an id it does not hold - the one restore error the main process
+/// recovers from (it reads the prompt from token 0); every other error means the worker's session is lost
+inline constexpr char kStageCkptMissing[] = "checkpoint not held: ";
+/// Parked conversations (docs/remote-stage/PARKING.md): the ids a keep[] may name on a worker that lists
+/// kStageCapPark (the live chain's checkpoints, the parked conversations' parks and checkpoints).  A worker without
+/// the bit reads kStageCkptMax at most, as before: a main process names more only when it parks.
+inline constexpr int32_t kStageKeepMax = 256;
+
+// (rows[n * w]: n rows of w floats in the link's row format, StageRows)
+enum class StageMsg : uint32_t {
+    Hello = 1,
+    HelloOk = 2,
+    Run = 3,        // a = T, b = pos0; payload: int32 tokens[T], rows[T * handoff_floats]
+    RunOk = 4,      // a = the worker's time (us); payload: rows[T * handoff_floats]
+    Commit = 5,     // a = n_keep; no reply (an error comes back on the next reply)
+    Prefill = 6,    // a = T, b = pos0, c = flags (bit 0: the prompt is one chunk) | skip << 8; payload: int64 tokens[T],
+                    // rows[T * D]
+    PrefillOk = 7,  // a = the worker's time (us); payload: rows[(T - skip) * D], the chunk's rows from row `skip`
+                    // (the main process needs no earlier ones: the drafter's window does not reach them)
+    Reset = 8,      // a fresh prompt from position 0; payload: int64 keep[] (the checkpoint ids the worker keeps)
+    ResetOk = 9,
+    Error = 10,     // payload: the message
+    Positions = 11, // a = cells, b = 1: the identity (no payload); payload: int32 table[cells * 3], each cell's
+                    // M-RoPE (t, h, w), for the next request; no reply (an error comes back on the next reply)
+    CkptSave = 12,  // a = id, b = L (the worker must be at L); payload: int64 keep[] (with id when it is kept)
+    CkptSaveOk = 13,     // a = 1 stored, 0 not stored (the worker's store is as it was)
+    CkptRestore = 14,    // a = id, b = L; payload: int64 keep[]
+    CkptRestoreOk = 15,
+    // parked conversations (docs/remote-stage/PARKING.md; only to a worker whose hello lists kStageCapPark)
+    ParkSave = 16,       // a = id, b = L (the worker must be at L); payload: int64 keep[] (with id).  The worker
+                         // drops what keep[] does not name first, whatever the outcome
+    ParkSaveOk = 17,     // a = 1 stored, 0 not stored (the prune above happened)
+    ParkRestore = 18,    // a = id, b = L; payload: int64 keep[] (the park itself not in it: the main process took it)
+    ParkRestoreOk = 19,
+    // session files (docs/remote-stage/SESSIONS.md; only to a worker whose hello lists kStageCapSession)
+    SessionPut = 20,     // a = the id of the checkpoint part at Lc (0: none), b = L (the worker must be at L);
+                         // payload: uint64 token[2], int64 Lc.  The worker writes its half of the session to its disk
+    SessionPutOk = 21,   // a = the bytes written
+    SessionGet = 22,     // a = the id the worker keeps the checkpoint at Lc under (0: none), b = L; payload: uint64
+                         // token[2], int64 Lc, int64 keep[] (with a).  The worker reads its half back: session at L
+    SessionGetOk = 23,
+};
+
+#pragma pack(push, 1)
+struct StageHeader {
+    uint32_t magic = kStageMagic;
+    uint32_t type = 0;
+    int64_t a = 0, b = 0, c = 0;
+    uint64_t bytes = 0;   // payload bytes after the header
+};
+
+/// What both sides must agree on; exchanged once per connection, each side checks the other's.
+struct StageHello {
+    uint32_t protocol = kStageProtocol;
+    int32_t n_embd = 0, hc = 0, n_layers = 0, n_expert = 0;
+    int32_t layer_begin = 0;      ///< the worker's first layer (the main process's K)
+    int32_t max_t = 0;            ///< the widest verify window
+    int32_t kv_type = 0;          ///< the K/V placement (kv_mode); compared only when neither hello has kStageCapKvElem
+    int64_t max_context = 0;
+    int64_t chunk = 0;            ///< the largest prompt chunk the main process sends
+    int64_t handoff_floats = 0;   ///< floats per verify-window row
+    uint64_t pack_hash = 0;       ///< the model pack's fingerprint (both sides must load the same model)
+    int32_t tail_skip = 0;        ///< the main process's STRATA_ROUTE_TAIL_SKIP rank (0: off); a worker uses it
+    int32_t vision = 0;           ///< started with --vision (a main process with it needs a worker with it)
+    int32_t ckpt_max = 0;         ///< the main process: the checkpoint parts it may have the worker keep (0: none)
+    /// the row formats this side sends and reads (bit 1 << StageRows); the link uses the narrowest both list.  A main
+    /// process lists fp32 and the one it asks for (STRATA_REMOTE_ROWS), a worker every one it has
+    uint32_t row_formats = 1u << 0;
+    char build[48] = {};          ///< engine build id (informational)
+    char unused[64] = {};         ///< (protocol 7's token: the TLS handshake proves both ends now)
+};
+#pragma pack(pop)
+// one size across protocols: an older peer's hello is read whole and refused for its protocol, not as malformed
+static_assert(sizeof(StageHello) == 192, "the hello's size");
+
+/// How a message's rows (a window's, a prompt chunk's, both ways) travel.  fp32 is the engine's own and the default;
+/// bf16 halves the bytes and rounds each value to 8 significant bits (round to nearest even, as the GPU kernels do).
+/// The engine's buffers stay fp32 on both sides: the link converts as it sends and reads.  A format that loses
+/// precision is the main process's choice (STRATA_REMOTE_ROWS); a worker lists every one it has.
+enum class StageRows : uint32_t { F32 = 0, BF16 = 1 };
+inline constexpr uint32_t kStageRowsAll = (1u << (uint32_t) StageRows::F32) | (1u << (uint32_t) StageRows::BF16);
+/// The format of a link whose two hellos list `a` and `b`: the narrowest in both (fp32 when no other is).
+StageRows stage_rows_agreed(uint32_t a, uint32_t b);
+const char* stage_rows_name(StageRows f);
+/// "fp32" / "bf16" (as STRATA_REMOTE_ROWS names them); false for another name
+bool stage_rows_parse(const std::string& name, StageRows& f);
+/// Bytes of `rows` rows of `width` floats each in format `f`.
+size_t stage_rows_bytes(StageRows f, size_t rows, size_t width);
+/// `rows` x `width` floats to format `f` (stage_rows_bytes of them at dst), and back.
+/// bf16 runs on SSE2 (every x86-64 CPU) or AVX2 (when the CPU has it), elsewhere value by value.
+void stage_rows_encode(StageRows f, const float* src, size_t rows, size_t width, void* dst);
+void stage_rows_decode(StageRows f, const void* src, size_t rows, size_t width, float* dst);
+
+/// row_formats is not all row formats: bits 0-15 are the formats (a new format takes the next free one of these),
+/// bits 16-23 a value, bits 24-31 capability bits - a peer reads only the format bits it has (kStageRowsAll), so
+/// neither of the others is ever a row format.  Bit 31 (kStageCapKvElem): bits 16-23 hold this side's K/V element
+/// type (--kv).  Two hellos with it must store the same, and kv_type (each side's K/V placement, which earlier
+/// builds compared as the element type) is not compared; one with it and one without (an earlier protocol 7 build,
+/// which still compares kv_type itself): no K/V type is compared here, and each side logs a line (--kv must
+/// match by hand); two without it: kv_type compared, as earlier builds do.
+inline constexpr uint32_t kStageCapKvElem = 1u << 31;
+/// Bit 30 (kStageCapPark): parked conversations (docs/remote-stage/PARKING.md).  A worker lists it when it keeps the
+/// parks (ParkSave / ParkRestore) and reads a keep[] of up to kStageKeepMax ids; a main process lists it when it
+/// parks (the worker then admits every checkpoint part against its RAM floor too).  A side without it never sends or
+/// gets the park messages; an older peer ignores the bit (neither the hello check nor the row formats read it).
+inline constexpr uint32_t kStageCapPark = 1u << 30;
+/// Bit 29 (kStageCapSession): session files (docs/remote-stage/SESSIONS.md).  A worker lists it when it keeps its half
+/// of a remote main process's session file on its own disk (--stage-session-dir) and takes SessionPut / SessionGet;
+/// a main process sends them only to a worker that lists it (and lists nothing itself).  An older peer ignores it.
+inline constexpr uint32_t kStageCapSession = 1u << 29;
+/// The 128-bit token of a session file's worker half (SessionPut / SessionGet): all zeros is no token.
+using StageToken = std::array<uint64_t, 2>;
+/// the row_formats bits for a K/V element type as --kv names it (fp16, int8, q4_0, k8v4); 0 for another name
+uint32_t stage_kv_elem_bits(const std::string& kv);
+/// both hellos carry their K/V element type
+bool stage_kv_elem_both(const StageHello& a, const StageHello& b);
+namespace detail {
+/// (tests, benchmarks) the bf16 conversion of n values with one instruction set: 0 value by value, 1 SSE2, 2 AVX2;
+/// false (nothing written) when this build or CPU lacks it
+bool stage_bf16_encode_isa(int isa, const float* src, size_t n, void* dst);
+bool stage_bf16_decode_isa(int isa, const void* src, size_t n, float* dst);
+/// the one stage_rows_encode / _decode use
+int stage_rows_isa();
+}  // namespace detail
+
+/// Seconds a send or receive on a link may block before the link counts as dead (STRATA_REMOTE_TIMEOUT_S, default 300).
+int io_timeout_s();
+
+/// Whether a StageClient's error says the link itself failed - nothing listened or the network did not reach it, the
+/// connection closed, was reset or timed out, a send or a receive failed, the name did not resolve (yet: a name
+/// service after a reboot) - so connecting again may mend it; false for a refusal (a certificate either end does not
+/// accept, a peer without TLS, model, layers, chunk, protocol: "refused", "differ"), an address that does not parse,
+/// and an error the worker reported ("remote stage (worker): ...").
+bool stage_link_lost(const std::string& err);
+
+/// Whether a StageClient's error is the end of a wait its stop flag cancelled (StageClient::connect).
+bool stage_wait_cancelled(const std::string& err);
+
+/// Running totals of one side's traffic (STRATA_REMOTE_TIMING=1 prints them).
+struct StageStats {
+    uint64_t runs = 0, commits = 0, prefills = 0, resets = 0;
+    uint64_t bytes_out = 0, bytes_in = 0;
+    double ms_run = 0, ms_prefill = 0;   ///< wall time of the round trips (main side) / of the work (worker side)
+    double ms_run_worker = 0;            ///< main side: the worker's own share of ms_run
+    double ms_encode = 0, ms_decode = 0; ///< the rows' conversion to and from the link's format (fp32: none); a
+                                         ///< worker's chunk replies are added as each one is out
+};
+
+/// The main process's end: one connection.  Windows, commits and resets are whole round trips (one thread at a
+/// time); prompt chunks are a send (prefill_send) and, on another thread, a receive (prefill_recv) in the same order.
+class StageClient {
+public:
+    StageClient() = default;
+    ~StageClient();
+    StageClient(const StageClient&) = delete;
+    StageClient& operator=(const StageClient&) = delete;
+
+    /// This PC's key and the certificates it accepts (connect refuses without them).
+    void set_credentials(std::shared_ptr<TlsCredentials> cred) { cred_ = std::move(cred); }
+    /// "host:port".  The TLS handshake (the worker must present a certificate `set_credentials` accepts, and accepts
+    /// this PC's), then sends `mine`, receives the worker's hello into `peer` and checks it against `mine`.
+    /// `timeout_s` > 0: the connection, the handshake and the hello's reply take that long at most, together; an
+    /// address that does not answer leaves the next one of the name's addresses the rest (each but the last gets 10 s
+    /// at most).  0: the system's connect time-out, then STRATA_REMOTE_TIMEOUT_S for the handshake and the reply.  `stop`, set by another thread, ends the
+    /// wait for either: "remote stage: the wait was cancelled" (stage_wait_cancelled), which stage_link_lost does not
+    /// count.  The name's lookup is not cut short by either.
+    bool connect(const std::string& host_port, const StageHello& mine, StageHello& peer, std::string& err,
+                 int timeout_s = 0, const std::atomic<bool>* stop = nullptr);
+    bool connected() const { return fd_ >= 0 && !broken_; }
+    void close();
+    /// Between requests (no reply outstanding): whether the link still stands, without sending anything and without
+    /// blocking.  The worker sends nothing unasked (no TLS session tickets either), so a readable socket, or bytes the
+    /// TLS session holds, mean its end closed or failed, or bytes came that no message asked for (the link is out of
+    /// step): false, with an error stage_link_lost counts, and the link is marked failed.
+    bool alive(std::string& err);
+    /// From another thread: the socket shut down, so a run() waiting for its reply fails (and then breaks the link).
+    /// Linux wakes a blocked read at once; on Windows (not tested) the read may wait for the link's own timeout.
+    void abort();
+
+    /// One verify window: send T tokens and T rows (in_floats floats), receive T rows (out_floats floats).
+    bool run(int T, const int32_t* tokens, int64_t pos0, const float* rows_in, size_t in_floats, float* rows_out,
+             size_t out_floats, std::string& err);
+    /// The accepted count of the last window (one way).
+    bool commit(int n_keep, std::string& err);
+    /// One prompt chunk out: T tokens and T rows of `row_floats`; its reply is the next prefill_recv's.
+    bool prefill_send(const int64_t* tokens, int64_t T, int64_t pos0, int64_t flags, const float* rows_in,
+                      size_t row_floats, int64_t skip, std::string& err);
+    /// The oldest outstanding chunk's reply: rows [skip, T) into rows_out + skip rows.
+    bool prefill_recv(float* rows_out, size_t row_floats, int64_t T, int64_t skip, std::string& err);
+    /// A fresh prompt: the worker zeroes its session and keeps only the checkpoint parts in `keep`.
+    bool reset(const std::vector<int64_t>& keep, std::string& err);
+    /// The positions of the next request's cells [0, cells): `table` is (t, h, w) per cell; nullptr: the identity
+    /// (every cell its own index, as a text request has).  One way.
+    bool positions(const int32_t* table, int64_t cells, std::string& err);
+    /// Conversation checkpoints: the worker saves its layers' running state at position L under `id` and keeps only
+    /// `keep`; `stored` false: it could not store it (its store is as it was).  An error: the worker's session is lost.
+    bool ckpt_save(int64_t id, int64_t L, const std::vector<int64_t>& keep, bool& stored, std::string& err);
+    /// The worker puts checkpoint `id` (saved at L) back and keeps only `keep`; `missing` (with false): it does not
+    /// hold `id` and nothing changed there.  Any other error: the worker's session is lost.
+    bool ckpt_restore(int64_t id, int64_t L, const std::vector<int64_t>& keep, bool& missing, std::string& err);
+    /// Parked conversations (a worker whose hello lists kStageCapPark): the worker drops what `keep` does not name,
+    /// then keeps its layers' K/V of cells [0, L) and its running state at L under `id`; `stored` false: it could not
+    /// (the prune happened).  An error: the worker's session is lost.
+    bool park_save(int64_t id, int64_t L, const std::vector<int64_t>& keep, bool& stored, std::string& err);
+    /// The worker puts park `id` (saved at L) back whole and keeps only `keep`; `missing` (with false): it does not
+    /// hold `id`, or the park failed its check before anything was written.  Any other error: the session is lost.
+    bool park_restore(int64_t id, int64_t L, const std::vector<int64_t>& keep, bool& missing, std::string& err);
+    /// Session files (a worker whose hello lists kStageCapSession): the worker writes its half of the session at L
+    /// (and its checkpoint part `ckpt_id`, saved at Lc; 0: none) to its disk under `token`; `bytes`: what it wrote.
+    /// An error from the worker leaves its session and stores as they were; `missing` (with false): the worker does
+    /// not hold checkpoint part `ckpt_id` (the caller may save again without a checkpoint).  `wait_s` > 0: the reply
+    /// may take that long (else STRATA_REMOTE_TIMEOUT_S, as every reply); the link counts as lost after it.
+    bool session_put(int64_t ckpt_id, int64_t L, const StageToken& token, int64_t Lc, int64_t& bytes, bool& missing,
+                     std::string& err, int wait_s = 0);
+    /// The worker reads its half under `token` back (the whole file checked before it writes anything): its session
+    /// at L, the checkpoint at Lc kept under `ckpt_id` (0: none), its stores pruned to `keep`.  `missing` (with
+    /// false): it has no such half or the half failed its check - nothing changed there.  Any other error: the
+    /// worker's session is lost (its stores are as they were).  `wait_s` as for session_put.
+    bool session_get(int64_t ckpt_id, int64_t L, const StageToken& token, int64_t Lc, const std::vector<int64_t>& keep,
+                     bool& missing, std::string& err, int wait_s = 0);
+
+    const StageStats& stats() const { return stats_; }
+    std::string peer_name() const { return peer_; }
+    /// the row format the connection agreed on (connect)
+    StageRows rows() const { return rows_; }
+    /// After connect: the worker's certificate (its name and fingerprint), the TLS version and cipher.
+    std::string tls_peer() const { return tls_ != nullptr ? tls_->peer() : std::string(); }
+
+private:
+    /// `rows` > 0: the payload is that many rows of `width` floats in the link's format, read into `reply` (floats),
+    /// their conversion's time added to *conv_ms
+    bool read_reply_(StageMsg want, void* reply, size_t reply_bytes, int64_t& worker_us, std::string& err,
+                     size_t rows = 0, size_t width = 0, double* conv_ms = nullptr);
+    /// a synchronous message with a keep[] payload (Reset, CkptSave, CkptRestore); `reply_a`: the reply's `a`
+    bool keep_call_(StageMsg type, StageMsg want, int64_t a, int64_t b, const std::vector<int64_t>& keep,
+                    int64_t& reply_a, std::string& err);
+    /// SessionPut / SessionGet: the token and Lc before keep[], and a reply that may take `wait_s`
+    bool session_call_(StageMsg type, StageMsg want, int64_t a, int64_t b, const StageToken& token, int64_t Lc,
+                       const std::vector<int64_t>& keep, int64_t& reply_a, std::string& err, int wait_s);
+    /// a failed link: shut down (both directions fail from now on) - the descriptor is closed only by close(), so
+    /// the other thread never reads or writes a number the process may have reused
+    void break_();
+    std::intptr_t fd_ = -1;   ///< the socket (a Winsock SOCKET fits; -1: none)
+    std::atomic<bool> broken_{false};   ///< (the sending side sets it, the receiving side reads it)
+    std::string peer_;
+    StageRows rows_ = StageRows::F32;
+    std::shared_ptr<TlsCredentials> cred_;
+    std::unique_ptr<TlsSession> tls_;     ///< the connection's (both threads': it locks inside)
+    std::vector<char> tls_tx_, tls_rx_;   ///< records going out (send_mu_), bytes coming in (recv_mu_)
+    std::mutex send_mu_, recv_mu_, q_mu_;
+    struct Sent {
+        std::chrono::steady_clock::time_point at;   ///< the send's start
+        uint64_t seq = 0;
+        double encode_ms = 0;                        ///< its rows' conversion (known when the send is out)
+    };
+    std::deque<Sent> sent_at_;   ///< outstanding chunks (timing)
+    uint64_t sent_seq_ = 0;
+    std::vector<unsigned char> tx_, rx_;   ///< a slice of rows in the link's format (not fp32): send_mu_'s, recv_mu_'s
+    StageStats stats_;
+};
+
+/// A relay worker's forwarding of prompt chunks to the next worker: one send in flight, in order.  `rows` must stay
+/// untouched until the next send() or wait() returns (the prompt path's two hand-off buffers alternate, so the one a
+/// chunk writes was sent two chunks ago - and send() waited for that).
+class StageRelay {
+public:
+    explicit StageRelay(StageClient& next) : next_(next) {}
+    ~StageRelay();
+    StageRelay(const StageRelay&) = delete;
+    StageRelay& operator=(const StageRelay&) = delete;
+    /// waits for the previous send, then sends this chunk on a thread
+    bool send(const int64_t* tokens, int64_t T, int64_t pos0, int64_t flags, const float* rows, size_t row_floats,
+              int64_t skip, std::string& err);
+    /// the send in flight is out (or failed: its error)
+    bool wait(std::string& err);
+
+private:
+    StageClient& next_;
+    std::future<bool> out_;
+    std::string err_;
+    std::vector<int64_t> tokens_;
+};
+
+/// The worker's end.  Every handler runs on the serving thread, one message at a time in arrival order.
+struct StageHandlers {
+    std::function<bool(const StageHello& main_hello, StageHello& mine, std::string& err)> hello;
+    /// rows in: StageBuffers::run_in; rows out: run_out
+    std::function<bool(int T, const int32_t* tokens, int64_t pos0, std::string& err)> run;
+    std::function<bool(int n_keep, std::string& err)> commit;
+    /// rows in: `rows_in` (one of StageBuffers::pf_in[2]); rows out: `rows_out` (one of pf_out[2], all T rows).
+    /// `skip`: the rows the reply leaves out (the main process does not read them)
+    std::function<bool(const int64_t* tokens, int64_t T, int64_t pos0, int64_t flags, int64_t skip, const float* rows_in,
+                       float* rows_out, std::string& err)> prefill;
+    /// optional (a relay worker): fills a chunk's rows_out [skip, T) just before its reply goes out, on the replying
+    /// thread, in chunk order - the serving thread reads the next chunk meanwhile.  A failure sends an error instead.
+    std::function<bool(float* rows_out, int64_t T, int64_t skip, std::string& err)> prefill_reply;
+    /// `keep`: the checkpoint ids the main process holds (prune the rest once the reset succeeded)
+    std::function<bool(const std::vector<int64_t>& keep, std::string& err)> reset;
+    /// optional (--vision): the next request's positions, as StageClient::positions sends them (table nullptr: the
+    /// identity).  Unset: a Positions message is an error.
+    std::function<bool(const int32_t* table, int64_t cells, std::string& err)> positions;
+    /// Conversation checkpoints (optional; without them a CkptSave / CkptRestore gets an error).  serve_stage has
+    /// already checked the position and reported a failed Commit.  ckpt_save: 1 stored, 0 not stored (the store as
+    /// it was), -1 an error.  ckpt_restore: an id it does not hold is an error starting with kStageCkptMissing.
+    std::function<int(int64_t id, int64_t L, const std::vector<int64_t>& keep, std::string& err)> ckpt_save;
+    std::function<bool(int64_t id, int64_t L, const std::vector<int64_t>& keep, std::string& err)> ckpt_restore;
+    /// Parked conversations (optional; unset: a ParkSave / ParkRestore gets an error).  serve_stage has checked the
+    /// position (ParkSave) and the pending errors as for the checkpoint messages.  park_save: 1 stored, 0 not stored,
+    /// -1 an error.  park_restore: an id it does not hold, or a park that fails its check before any write, is an
+    /// error starting with kStageCkptMissing; the session is at L after a success.
+    std::function<int(int64_t id, int64_t L, const std::vector<int64_t>& keep, std::string& err)> park_save;
+    std::function<bool(int64_t id, int64_t L, const std::vector<int64_t>& keep, std::string& err)> park_restore;
+    /// Session files (optional; unset: a SessionPut / SessionGet gets an error).  serve_stage has checked the position
+    /// and the pending errors (session_put, as for a ParkSave) and the token (not zero).  session_put: false with an
+    /// error leaves the session and the stores as they were; `bytes` the file's size.  session_get: an error starting
+    /// with kStageCkptMissing has written nothing (the session stays where it was); any other may have (the session is
+    /// lost); the session is at L after a success.
+    std::function<bool(int64_t ckpt_id, int64_t L, const StageToken& token, int64_t Lc, int64_t& bytes,
+                       std::string& err)> session_put;
+    std::function<bool(int64_t ckpt_id, int64_t L, const StageToken& token, int64_t Lc,
+                       const std::vector<int64_t>& keep, std::string& err)> session_get;
+    std::function<void()> disconnected;   ///< the main process went away (the session is stale)
+    /// optional (a relay worker): about once a second while the served main process is idle (no message read or being
+    /// read, no reply going out), on the serving thread.  False ends that connection with `err`, as a closed one ends:
+    /// its main process finds the link lost at its next request and connects again.
+    std::function<bool(std::string& err)> idle;
+};
+
+struct StageBuffers {
+    float* run_in = nullptr;    ///< max_t * handoff_floats (device-visible: the verifier reads it)
+    float* run_out = nullptr;
+    size_t run_floats = 0;      ///< capacity of each, floats
+    float* pf_in[2] = {};       ///< chunk * D each: the receiving thread fills one while the other is read
+    float* pf_out[2] = {};      ///< chunk * D each: one chunk's rows go back while the next chunk's are written
+    size_t pf_floats = 0;
+    int64_t handoff_floats = 0; ///< floats per verify row
+    int64_t pf_row_floats = 0;  ///< floats per prompt row (D)
+};
+
+/// A worker's position table (`cells` x (t, h, w)) from a Positions message: cells [0, cells_in) from `table`, the
+/// rest continuing from the last one sent, as the main process's own table continues past its prompt; `table` nullptr:
+/// the identity (every cell its own index).
+inline void stage_positions_fill(int32_t* out, int64_t cells, const int32_t* table, int64_t cells_in) {
+    for (int64_t c = 0; c < cells; ++c) {
+        int32_t* p = out + c * 3;
+        if (table == nullptr) {
+            p[0] = p[1] = p[2] = (int32_t) c;
+        } else if (c < cells_in) {
+            p[0] = table[c * 3];
+            p[1] = table[c * 3 + 1];
+            p[2] = table[c * 3 + 2];
+        } else {
+            p[0] = p[1] = p[2] = (int32_t) ((int64_t) table[(cells_in - 1) * 3] + (c - cells_in + 1));
+        }
+    }
+}
+
+/// Listens on `bind_addr`:`port` (empty: every interface) and serves one main process at a time until `stop` is set
+/// or listening fails.  A new connection waits in the listen backlog until the served one has had no message read,
+/// being read, or a reply going out for STRATA_REMOTE_TAKEOVER_S seconds (default 30; 0: until it closes); then a
+/// valid hello takes the worker over: the old one ends as a closed one does (`disconnected`).  An invalid one is
+/// refused and the old one stays; one accepted while the served one sends again is closed (its main process connects
+/// again).  `cred`: this PC's key and the certificates it accepts - a connection whose TLS handshake does not present
+/// one of them is refused before anything of it is read.  Returns 0 when stopped, nonzero without credentials or on a
+/// listen error (the reason on stderr).
+int serve_stage(const std::string& bind_addr, int port, std::shared_ptr<TlsCredentials> cred, const StageHandlers& h,
+                const StageBuffers& buf, StageStats& stats, const std::atomic<bool>* stop);
+
+}  // namespace strata::net

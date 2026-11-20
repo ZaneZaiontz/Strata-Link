@@ -153,7 +153,7 @@ with an in-process layer split; not measured.
 - **An NVIDIA card the engine supports on every PC** (RTX 20 or newer); each PC's build covers its own card.
 - **The same model on every PC:** the same pack directory (both sides compare a fingerprint of its `index.txt` and
   `native_experts.txt` and refuse a mismatch), the GGUF shards (a worker reads every shard's header and its own
-  layers' tensors; `tools/stage_ship.py` sends just that), and the expert profile. The fingerprint covers the pack's
+  layers' tensors; `terminal/tools/stage_ship.py` sends just that), and the expert profile. The fingerprint covers the pack's
   index files, not the weights.
 - **A native pack that takes its experts from the GGUF** (no `experts.bin`, no `--shared-expert-arena`): only that
   loader can hold a range of layers. Anything else stops at start with "a layer range needs a native pack read from
@@ -411,7 +411,7 @@ greedy prompts (code, prose, Chinese, a sum, a summary of a 9,364-token prompt; 
 
 ## Picking K and the chunk
 
-What the measurements say (re-measure on your PCs; `tools/stage_tune.py` does it):
+What the measurements say (re-measure on your PCs; `terminal/tools/stage_tune.py` does it):
 
 - **Use a large prompt chunk on every PC** (5888 or more), not the 2048 default of a plain split. Each chunk streams
   the experts it routes to over PCIe, layer by layer, so a larger chunk spreads that cost over more tokens.
@@ -430,11 +430,11 @@ What the measurements say (re-measure on your PCs; `tools/stage_tune.py` does it
 
 ## Tools
 
-Three Python scripts (standard library only) in `tools/`. The agent and the shipper run on Linux and Windows; `stage_tune.py tune` runs on a Linux main PC (it starts and stops the server with `pgrep` / `kill`), `stage_tune.py apply` anywhere. Their docstrings are the
-full usage; `python -m unittest tools.test_stage_node` tests the agent's file store and restarts, its TLS, and the
+Three Python scripts (standard library only) in `terminal/tools/`. The agent and the shipper run on Linux and Windows; `stage_tune.py tune` runs on a Linux main PC (it starts and stops the server with `pgrep` / `kill`), `stage_tune.py apply` anywhere. Their docstrings are the
+full usage; `python -m unittest tools.test_stage_node` (from `terminal/`) tests the agent's file store and restarts, its TLS, and the
 shipper's paths.
 
-**`tools/stage_node.py`: a node agent** on each worker PC. It starts and stops that PC's stage workers on request
+**`terminal/tools/stage_node.py`: a node agent** on each worker PC. It starts and stops that PC's stage workers on request
 and reports the PC (GPU, RAM, CPU) and the link speed toward other nodes. It speaks HTTPS (TLS 1.3 only) with the
 PC's key folder, the workers' (`"tls_dir"`, or `STRATA_STAGE_TLS`, which wins), and serves only a client whose
 certificate is in that folder's `peers/` (or is its own); the shipper and the tuner check the agent's certificate the
@@ -443,7 +443,7 @@ same way with theirs. A client that is refused is closed in the handshake, and t
 agent address in an older config is taken as `https://`.
 
 ```
-python3 tools/stage_node.py node.json
+python3 terminal/tools/stage_node.py node.json
 ```
 
 ```json
@@ -488,14 +488,14 @@ python3 tools/stage_node.py node.json
   exit code, seconds and the last 40 lines of its output. Only those argument lists run (no shell, nothing taken from
   the request), one `/service` at a time (a second one meanwhile answers **409** at once), at most `timeout_s` (1 to
   3600 s; then the command and what it waits for are ended). For another engine's helper on this PC
-  that a main process elsewhere switches to, for example DeepSeek's expert server behind a server's `model_control`
+  that a main process elsewhere switches to, for example one behind a server's `model_control`
   (DETAILS.md, "Sharing the GPU"). A command that leaves a daemon behind (`setsid nohup`) still returns: the output is
   read from a file, not a pipe. A daemon it starts runs in the agent's service, so restarting the agent's unit ends it.
 - Shipped files are sparse: on Windows they are marked sparse and grown with `SetEndOfFile` (NTFS and ReFS would
   otherwise write the gaps as zeros), so 84.77 GiB of shards holding 8 layers took 11.94 GiB of disk. A drive that
   cannot hold sparse files (FAT32, exFAT) is refused with that reason.
 
-**`tools/stage_ship.py`: send a node only its layers.** From the PC that holds the whole model it sends, to a node
+**`terminal/tools/stage_ship.py`: send a node only its layers.** From the PC that holds the whole model it sends, to a node
 agent's `data_dir`: every GGUF shard's header and the tensors of the node's layers at their own offsets, in files of
 the shards' full sizes (sparse on the node, so the loader and the pack's index work unchanged); the non-layer tensors
 except the PLE table (`per_layer_token_embd`, ~26.8 GB for RVN IQ3_S), which only a node running layer 1 would need;
@@ -504,7 +504,7 @@ the pack directory, the expert profile and optionally the engine's directory. Wh
 compared on arrival.
 
 ```
-python3 tools/stage_ship.py --agent https://192.0.2.11:7840 --tls-dir /opt/strata/stage-tls \
+python3 terminal/tools/stage_ship.py --agent https://192.0.2.11:7840 --tls-dir /opt/strata/stage-tls \
     --model-dir /data/models/<model> --pack-dir /data/packs/<pack> \
     --profile /opt/strata/data/expert-profile.bin --layers 26-47
 ```
@@ -528,13 +528,13 @@ layers 40-47 to a Windows node, 11.39 GiB in 211 s and 15.51 GiB in 184 s; UD-Q4
 27.63 GiB in 342 s, and layers 40-47 more later (12.85 GiB in 162 s, the rest skipped). The UD-Q4_K_XL workers and
 PC C's RVN workers in the measurements above ran from these sparse files (PC B's RVN worker had a full copy).
 
-**`tools/stage_tune.py`: the layer-split tuner**, run on the main PC. It measures for real: for every configuration
+**`terminal/tools/stage_tune.py`: the layer-split tuner**, run on the main PC. It measures for real: for every configuration
 it restarts the workers (through their agents) and the main server, reads one long prompt and three short ones, and
 takes each stage's own times from the timing lines.
 
 ```
-python3 tools/stage_tune.py tune  cluster.json OUTDIR    # measure and search; writes OUTDIR/main.json, nodes.json, report.md
-python3 tools/stage_tune.py apply cluster.json OUTDIR    # start the workers as nodes.json says, then serve OUTDIR/main.json
+python3 terminal/tools/stage_tune.py tune  cluster.json OUTDIR    # measure and search; writes OUTDIR/main.json, nodes.json, report.md
+python3 terminal/tools/stage_tune.py apply cluster.json OUTDIR    # start the workers as nodes.json says, then serve OUTDIR/main.json
 ```
 
 ```json
@@ -609,7 +609,7 @@ ones).
 ## What is turned off or refused
 
 - **Refused at start** on a build without TLS (`-DSTRATA_STAGE_TLS=OFF`: the Windows AMD engine,
-  `tools/hip/build_windows.bat`): every remote stage, as the main PC or as a worker ("this build has no TLS").
+  `terminal/tools/hip/build_windows.bat`): every remote stage, as the main PC or as a worker ("this build has no TLS").
 - **Refused at start** with a remote stage: `--batch`, `--peer-device`, `--control-vector` (and the speed
   projection, which is one), `--expert-cache-remote`, `--prefill-head-alias`, and `--pipeline-windows` on a worker
   (the main process takes it, see [Overlapping the decode windows](#overlapping-the-decode-windows---pipeline-windows-2)).
@@ -629,28 +629,28 @@ ones).
   `STRATA_PF_FUSED=1`.
 - **What 0.1.45 adds**, as it applies to a remote stage (read from the code; none of it run with a remote stage):
   - `STRATA_PCIE_BALANCE=1` is taken by a worker only. The main process runs a split of two stages (`n_stages`,
-    `src/program/generate.cpp:8860`), and the balance is set only on a verifier of one stage
-    (`src/program/generate.cpp:9153`), which a worker is. On the worker it then turns Expert Deferral off at start-up
-    (`src/core/verify.cpp:798-809`): with `STRATA_PCIE_BALANCE=1` on both PCs, the main PC's layers keep deferral and
+    `engine/src/program/generate.cpp:8860`), and the balance is set only on a verifier of one stage
+    (`engine/src/program/generate.cpp:9153`), which a worker is. On the worker it then turns Expert Deferral off at start-up
+    (`engine/src/core/verify.cpp:798-809`): with `STRATA_PCIE_BALANCE=1` on both PCs, the main PC's layers keep deferral and
     the worker's run without it. As anywhere, it needs a native pack on one GPU, no `--batch` and no `--pcie-frac`
-    (`src/program/generate.cpp:3561`).
+    (`engine/src/program/generate.cpp:3561`).
   - `--prompt-cache-spread` (with `--prompt-cache N` on the main process): one rule, `evict_victim`
-    (`src/program/generate.cpp:9683-9709`), picks the checkpoint the main process drops
-    (`src/program/generate.cpp:9883`) and forecasts the chain it sends the worker as `keep`
-    (`src/program/generate.cpp:9739-9744`, `9753`). The worker keeps what it is told and never evicts on its own
-    (`src/program/generate.cpp:11821`, `11869`).
-  - `STRATA_CKPT_POOL=1` recycles the main process's own checkpoint buffers (`src/program/generate.cpp:9721`, `9884`).
-    A worker's parts are in its own store (`src/program/generate.cpp:11822`), which the pool does not use.
+    (`engine/src/program/generate.cpp:9683-9709`), picks the checkpoint the main process drops
+    (`engine/src/program/generate.cpp:9883`) and forecasts the chain it sends the worker as `keep`
+    (`engine/src/program/generate.cpp:9739-9744`, `9753`). The worker keeps what it is told and never evicts on its own
+    (`engine/src/program/generate.cpp:11821`, `11869`).
+  - `STRATA_CKPT_POOL=1` recycles the main process's own checkpoint buffers (`engine/src/program/generate.cpp:9721`, `9884`).
+    A worker's parts are in its own store (`engine/src/program/generate.cpp:11822`), which the pool does not use.
   - `STRATA_PRIMARY_DEVICE` is allowed on a worker: the refusal is for a layer split
-    (`src/program/generate.cpp:2998`), and a worker takes none (`src/program/generate.cpp:2932-2935`). Its session then
-    runs on that device (`src/program/generate.cpp:3479`, `5165`). On the main process it is refused, since
-    `--remote-stage` needs `--layer-split` (`src/program/generate.cpp:2931`).
+    (`engine/src/program/generate.cpp:2998`), and a worker takes none (`engine/src/program/generate.cpp:2932-2935`). Its session then
+    runs on that device (`engine/src/program/generate.cpp:3479`, `5165`). On the main process it is refused, since
+    `--remote-stage` needs `--layer-split` (`engine/src/program/generate.cpp:2931`).
   - No effect with a remote stage: `STRATA_SPLIT_OVERLAP` needs a split over two GPUs
-    (`src/program/generate.cpp:8923`), and the main process's is on one (`--split-device 0`,
-    `src/program/generate.cpp:2892`, `2931`), while a worker has no split (`src/program/generate.cpp:8897`).
+    (`engine/src/program/generate.cpp:8923`), and the main process's is on one (`--split-device 0`,
+    `engine/src/program/generate.cpp:2892`, `2931`), while a worker has no split (`engine/src/program/generate.cpp:8897`).
     `STRATA_HANDOFF_PIPE` and `--prefill-pipe` act between a prompt path and its next stage in the same process
-    (`src/prefill/prefill.cpp:1424`, `2306`), and a remote stage's prompt path has none
-    (`src/program/generate.cpp:8654`, `8664`).
+    (`engine/src/prefill/prefill.cpp:1424`, `2306`), and a remote stage's prompt path has none
+    (`engine/src/program/generate.cpp:8654`, `8664`).
 
 ## Security
 
@@ -714,7 +714,6 @@ window, a split that decodes as fast as without it, and ~32K-token prompts read 
 | | status |
 |---|---|
 | Model family | Qwen3.8-Flash-Next only (48 layers, 512 experts top-10, 4 hyper-connection streams, n_embd 2560). The hello checks the geometry. A Qwen3.6-35B-A3B file (0.1.44 runs it from the same binary, on its own engine path) is refused at start |
-| DeepSeek V4.1-Flash (0.2.4) | not supported: it runs on its own engine, `strata-dsv41` (`src/dsv41`), which has no remote stage and stops at an unknown option such as `--remote-stage` |
 | RVN IQ3_S, native pack read from its GGUF | **measured** (two and three PCs) |
 | Huihui UD-Q4_K_XL (Unsloth UD layout), native pack read from its GGUF | **measured** (one, two and three PCs) |
 | Other quantizations and models of the family (the official IQ3_S, IQ3_XXS, IQ2_XS, Coder, Swift 1.5, UD-IQ4_XS) | not tested. The hand-off is fp32 rows whatever the quantization, the arena range is cut by layer from the pack's expert table and the shipper works by tensor name |
@@ -723,7 +722,7 @@ window, a split that decodes as fast as without it, and ~32K-token prompts read 
 | Linux, NVIDIA (CUDA 13.0) | measured: Ubuntu 24.04 in an LXC container (main), a Linux host with kernel 6.14 (worker) |
 | Windows 11 native, NVIDIA (MSVC 2022, CUDA 13.0) | measured as a worker (and its node agent); as the main PC not tested here (a user ran one: see the AMD row) |
 | WSL2 (Windows 11, mirrored networking) | measured as a worker |
-| AMD (HIP) | Linux: builds (ROCm 7.0, gfx1100, in a container); not run here: no AMD card was available. A user ran a Radeon 8060S (gfx1151, Windows) as the worker of an RTX 5070 main PC over USB4, on 0.1.45.3-link.1 ([report](https://github.com/Niko1221/Strata/pull/1748#issuecomment-6332714185)), before TLS. **Since 0.1.54-link.1 a Windows AMD PC cannot take part in a remote stage**, as the main PC or as a worker: `tools/hip/build_windows.bat` builds with `-DSTRATA_STAGE_TLS=OFF` (no static OpenSSL has been tried with its compiler), and such an engine refuses `--remote-stage` and `--stage-worker` at start ("this build has no TLS"); Link's releases ship no Windows AMD engine of their own. A Linux AMD build has TLS as the others (a release build, `packaging/build_hip_linux.sh`, needs the static OpenSSL there too) |
+| AMD (HIP) | Linux: builds (ROCm 7.0, gfx1100, in a container); not run here: no AMD card was available. A user ran a Radeon 8060S (gfx1151, Windows) as the worker of an RTX 5070 main PC over USB4, on 0.1.45.3-link.1 ([report](https://github.com/Niko1221/Strata/pull/1748#issuecomment-6332714185)), before TLS. **Since 0.1.54-link.1 a Windows AMD PC cannot take part in a remote stage**, as the main PC or as a worker: `terminal/tools/hip/build_windows.bat` builds with `-DSTRATA_STAGE_TLS=OFF` (no static OpenSSL has been tried with its compiler), and such an engine refuses `--remote-stage` and `--stage-worker` at start ("this build has no TLS"); Link's releases ship no Windows AMD engine of their own. A Linux AMD build has TLS as the others (a release build, `packaging/build_hip_linux.sh`, needs the static OpenSSL there too) |
 
 | Intel (SYCL) | the SYCL port builds (oneAPI 2026.1.1, in a container) but has no remote stage: it keeps its own copies of the engine files this feature changes |
 | Apple (Metal, 0.1.44) | refused at start: the Metal backend runs each verify window itself, past the remote stage's hooks. Its build compiles the link's code so the binary links (not built here: no Mac) |

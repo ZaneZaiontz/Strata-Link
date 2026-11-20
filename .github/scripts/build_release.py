@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Configure and build one part of a ready-made engine zip: the engine (strata + strata_kq) or the image encoder
-(tools/vision's strata-vision), portable (AVX2 baseline, the static MSVC runtime), for the CUDA archs given.
+"""Configure and build one part of a ready-made engine zip: the engine (engine/'s strata) or the image encoder
+(terminal/tools/vision's strata-vision), portable (AVX2 baseline, the static MSVC runtime), for the CUDA archs given.
 
-    python .github/scripts/build_release.py engine --build build-rel --cuda D:/cuda-13.0.1 --llama third_party/llama.cpp \\
+    python .github/scripts/build_release.py engine --build build-rel --cuda D:/cuda-13.0.1 \\
         --archs "75-real;86-real;89-real;120" [-D NAME=VALUE ...]
 
-It is setup.py's build_engine() with the release's options: the same CMake definitions (STRATA_GGML_DIR / LLAMA_DIR,
-CMAKE_CUDA_COMPILER, CUDAToolkit_ROOT), STRATA_PORTABLE=ON instead of OFF, and a failed build tried once more (CUDA's
+It is setup.py's build_engine() with the release's options: the same CMake definitions (CMAKE_CUDA_COMPILER,
+CUDAToolkit_ROOT; ggml is the vendored engine/third_party/strata-ggml), STRATA_PORTABLE=ON instead of OFF, and a failed build tried once more (CUDA's
 ptxas now and then fails to parse a PTX file it just wrote, issue #45).  On Windows the compiler's environment comes
 from vcvars64.bat (vswhere's newest Visual Studio with the C++ tools, or STRATA_VCVARS).
 """
@@ -53,7 +53,6 @@ def main() -> int:
     ap.add_argument("part", choices=("engine", "vision"))
     ap.add_argument("--build", required=True, type=Path, help="the build folder")
     ap.add_argument("--cuda", required=True, type=Path, help="the CUDA toolkit's root (bin/nvcc in it)")
-    ap.add_argument("--llama", required=True, type=Path, help="llama.cpp at the pinned commit (setup.get_llama_cpp())")
     ap.add_argument("--archs", required=True, help="CMAKE_CUDA_ARCHITECTURES")
     ap.add_argument("--jobs", type=int, default=os.cpu_count() or 4)
     ap.add_argument("--configure-only", action="store_true", help="stop after CMake's configure step")
@@ -65,11 +64,11 @@ def main() -> int:
     common = ["-DCMAKE_BUILD_TYPE=Release", "-DSTRATA_PORTABLE=ON", f"-DCMAKE_CUDA_ARCHITECTURES={a.archs}",
               f"-DCMAKE_CUDA_COMPILER={nvcc.as_posix()}", f"-DCUDAToolkit_ROOT={a.cuda.as_posix()}"]
     if a.part == "engine":
-        src, target = ROOT, "strata"
-        defs = ["-DSTRATA_ENABLE_CUDA=ON", "-DSTRATA_BUILD_TESTS=OFF", f"-DSTRATA_GGML_DIR={a.llama.resolve().as_posix()}"]
+        src, target = ROOT / "engine", "strata"
+        defs = ["-DSTRATA_ENABLE_CUDA=ON", "-DSTRATA_BUILD_TESTS=OFF"]
     else:
-        src, target = ROOT / "tools" / "vision", "strata-vision"
-        defs = ["-DSTRATA_VISION_CUDA=ON", f"-DLLAMA_DIR={a.llama.resolve().as_posix()}"]
+        src, target = ROOT / "terminal" / "tools" / "vision", "strata-vision"
+        defs = ["-DSTRATA_VISION_CUDA=ON"]
     # this PATH's cmake and ninja (the pinned pip ones), not the ones vcvars puts first (Visual Studio's own)
     cmake, ninja = shutil.which("cmake"), shutil.which("ninja")
     if not cmake or not ninja:

@@ -2,7 +2,7 @@
 from pip (CUDA_WHEELS / CUDA12_WHEELS: cuBLAS and the CUDA runtime), the NVIDIA driver's nvcuda.dll, and Windows' own.
 A new import (a shared MSVC runtime, another CUDA library) would make the zip fail to start on a user's PC.
 
-    python .github/scripts/check_imports.py strata.exe strata_kq.dll strata-vision.exe    (needs pefile)
+    python .github/scripts/check_imports.py strata.exe strata-vision.exe    (needs pefile)
 """
 import sys
 from pathlib import Path

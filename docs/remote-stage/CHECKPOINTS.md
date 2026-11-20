@@ -15,7 +15,7 @@ system prompt (first turn 15.5 s to the first token, every later turn 0.45-1.84 
 
 ## What a checkpoint is (unchanged)
 
-`ConversationCheckpoint` (`include/strata/core/conversation_cache.hpp`) holds RUNNING state only: per GDN layer the
+`ConversationCheckpoint` (`engine/include/strata/core/conversation_cache.hpp`) holds RUNNING state only: per GDN layer the
 recurrence and conv history (~3.27 MB a layer), per QSA layer the indexer tail / dead / block_pos, the PLE history,
 and the token ids. Positional state (QSA K/V, pooled indexer keys, the drafter's K/V) is not copied: it stays in place
 and a checkpoint is valid only while the cells below it still hold its tokens. That is why the chain `checks` is
@@ -216,14 +216,14 @@ an empty session, so:
 
 ## As built
 
-- Protocol and the worker's side of it: `include/strata/net/stage_link.hpp`, `src/net/stage_link.cpp`. The keep[]
+- Protocol and the worker's side of it: `engine/include/strata/net/stage_link.hpp`, `engine/src/net/stage_link.cpp`. The keep[]
   payload is read by the receiving thread (more than 64 ids, or a size not a multiple of 8: "bad checkpoint list").
   `serve_stage` keeps `pos` and checks it, reports a pending Commit error on CkptSave and logs and clears it on
   CkptRestore, and refuses a hello whose ckpt_max is above `kStageCkptMax`; the handlers (`StageHandlers::ckpt_save`
   / `ckpt_restore`, `reset` with keep) do the rest. The missing-id error starts with `kStageCkptMissing`
   ("checkpoint not held: "); the client sets `missing` only when the worker's own text starts with it, so a relay's
   forwarded error (prefixed "relay: the next worker: ") is the state class, as above.
-- The store: `include/strata/net/stage_ckpt_store.hpp` (header-only; admission, prune, clear; a put never prunes
+- The store: `engine/include/strata/net/stage_ckpt_store.hpp` (header-only; admission, prune, clear; a put never prunes
   its own id, so a part answered "stored" is held even if keep[] left it out). At the hello a worker also refuses a
   main process whose ckpt_max parts of this worker's size would not fit in half of the RAM available
   (`stage_ckpt_ram_ok`, with the engine's `available_host_bytes()`: MemAvailable and the cgroup limits on Linux,
@@ -249,7 +249,7 @@ an empty session, so:
 - `ConvCheckpoint::remote_id` is an `int32_t` in the padding after `pinned`, not an int64: the struct's size (which
   the parking byte counts and their log lines use) stays the same on the default path. The wire and the worker's
   store keep int64 ids; the main's counter is 32-bit (2^31 checkpoints per process).
-- Explicit length: `conversation_checkpoint_save/restore(..., size_t tokens, ...)` in `src/core/conversation_state.cpp`.
+- Explicit length: `conversation_checkpoint_save/restore(..., size_t tokens, ...)` in `engine/src/core/conversation_state.cpp`.
   The restore with ids is the shared copy-back plus ple_prev, as before; the explicit one does not touch ple_prev.
 - Main side, `generate.cpp`: `checkpoint_at` works the eviction out on a list of pointers with the same victim
   function the real eviction then uses (`evict_victim`), so keep[] is exactly the chain the eviction leaves (plus

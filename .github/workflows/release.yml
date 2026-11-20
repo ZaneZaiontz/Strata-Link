@@ -8,7 +8,7 @@
 # One job per program (the engine, the image encoder) per zip, so no job comes near the 6 h limit; the pack job zips
 # them.  The CUDA versions are the ones whose cuBLAS setup.py installs from pip (CUDA_WHEELS / CUDA12_WHEELS): 13.0
 # Update 1 (cuBLAS 13.0.2.14) and 12.9 Update 1 (cuBLAS 12.9.1.4).  The archs are upstream's releases' (cuobjdump
-# of the 0.1.44.1 zips).  The AMD (HIP) zip is not built here: tools/hip/build_windows.bat.  The Linux zip is built on
+# of the 0.1.44.1 zips).  The AMD (HIP) zip is not built here: terminal/tools/hip/build_windows.bat.  The Linux zip is built on
 # Rocky Linux 8 (glibc 2.28) with libstdc++ linked in, and run on the oldest distributions before a release.  The
 # engine links OpenSSL statically (the remote stage's TLS 1.3): OpenSSL 3.5 LTS from its release tarball, pinned by
 # hash, in both: through vcpkg (pinned to a release, an overlay port) on Windows, built from source on Rocky Linux 8; a
@@ -51,8 +51,8 @@ jobs:
       - id: v
         name: LINK_VERSION is this engine's version, and the tag's
         run: |
-          link=$(python3 -c "import setup; print(setup.link_version())")
-          engine=$(python3 -c "import setup; print(setup.source_version())")
+          link=$(cd terminal && python3 -c "import setup; print(setup.link_version())")
+          engine=$(cd terminal && python3 -c "import setup; print(setup.source_version())")
           if ! printf '%s' "$link" | grep -Eqx '[0-9.]+-link\.[0-9]+' || [ "${link%-link.*}" != "$engine" ]; then
             echo "::error::LINK_VERSION is '$link'; CMakeLists.txt's version is $engine: it must be $engine-link.<n>"; exit 1
           fi
@@ -92,11 +92,10 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      - name: cmake and ninja (requirements-build.txt's)
-        run: python -m pip install $(grep -E '^(cmake|ninja)==' requirements-build.txt | tr -d '\r')
+      - name: cmake and ninja (terminal/requirements-build.txt's)
+        run: python -m pip install $(grep -E '^(cmake|ninja)==' terminal/requirements-build.txt | tr -d '\r')
       - id: pins
         run: |
-          echo "llama=$(python -c 'import setup; print(setup.LLAMA_CPP_COMMIT)')" >> "$GITHUB_OUTPUT"
           echo "CUDA_ROOT=$RUNNER_TEMP\\cuda-${{ matrix.cuda }}" >> "$GITHUB_ENV"
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         id: cuda-cache
@@ -109,12 +108,6 @@ jobs:
           parts="cuda_nvcc cuda_cudart libcublas cuda_cccl"
           case "${{ matrix.cuda }}" in 13.*) parts="$parts cuda_crt libnvvm" ;; esac   # separate packages since 13.0
           python .github/scripts/cuda_redist.py --version "${{ matrix.cuda }}" --dest "$CUDA_ROOT" $parts
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: third_party/llama.cpp
-          key: llama.cpp-${{ steps.pins.outputs.llama }}-windows
-      - name: llama.cpp at setup.py's commit
-        run: python -c "import setup; setup.get_llama_cpp()"
       # the engine's remote stage is TLS 1.3, and a release build (STRATA_PORTABLE) links OpenSSL statically
       # (CMakeLists.txt strata_stage_tls): vcpkg's x64-windows-static, the static C runtime as the engine's (/MT), from
       # a vcpkg checkout pinned to its 2026.10.16 release (not the runner's, which moves with the image). Its own
@@ -136,13 +129,13 @@ jobs:
       - name: build ${{ matrix.part }}
         run: >-
           python .github/scripts/build_release.py ${{ matrix.part }} --build build --cuda "$CUDA_ROOT"
-          --llama third_party/llama.cpp --archs "${{ matrix.archs }}" ${{ matrix.defs }}
+          --archs "${{ matrix.archs }}" ${{ matrix.defs }}
           ${{ matrix.part == 'engine' && '-D "OPENSSL_ROOT_DIR=$OPENSSL_ROOT"' || '' }}
       - name: what it imports (the pip wheels' CUDA libraries, the driver, Windows)
         run: |
           python -m pip install --disable-pip-version-check -q pefile==2024.8.26
           ls -l build/*.exe build/*.dll build/bin/*.exe 2>/dev/null || true
-          python .github/scripts/check_imports.py build/strata.exe build/strata_kq.dll build/bin/strata-vision.exe
+          python .github/scripts/check_imports.py build/strata.exe build/bin/strata-vision.exe
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: build-windows-${{ matrix.zip }}-${{ matrix.part }}
@@ -150,7 +143,6 @@ jobs:
           retention-days: 14
           path: |
             build/strata.exe
-            build/strata_kq.dll
             build/bin/strata-vision.exe
             build/CMakeCache.txt
             build/CMakeFiles/*/CMakeCUDACompiler.cmake
@@ -161,7 +153,6 @@ jobs:
           retention-days: 90
           path: |
             build/strata.pdb
-            build/strata_kq.pdb
 
   linux:
     name: linux cuda13 ${{ matrix.part }}
@@ -217,28 +208,20 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: cmake and ninja (requirements-build.txt's)
+      - name: cmake and ninja (terminal/requirements-build.txt's)
         run: |
           python3.12 -m venv /opt/venv
-          /opt/venv/bin/pip install $(grep -E '^(cmake|ninja)==' requirements-build.txt | tr -d '\r')
+          /opt/venv/bin/pip install $(grep -E '^(cmake|ninja)==' terminal/requirements-build.txt | tr -d '\r')
           echo /opt/venv/bin >> "$GITHUB_PATH"
-      - id: pins
-        run: echo "llama=$(python3 -c 'import setup; print(setup.LLAMA_CPP_COMMIT)')" >> "$GITHUB_OUTPUT"
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: third_party/llama.cpp
-          key: llama.cpp-${{ steps.pins.outputs.llama }}-linux
-      - name: llama.cpp at setup.py's commit
-        run: python3 -c "import setup; setup.get_llama_cpp()"
       - name: build ${{ matrix.part }}
         run: >-
           python3 .github/scripts/build_release.py ${{ matrix.part }} --build build --cuda /usr/local/cuda-13.0
-          --llama third_party/llama.cpp --archs "75-real;86-real;89-real;120"
+          --archs "75-real;86-real;89-real;120"
           ${{ matrix.part == 'engine' && '-D OPENSSL_ROOT_DIR=/opt/openssl' || '' }}
       - name: what it needs (libraries, glibc 2.28 at most, no libstdc++ / libgcc_s)
         run: |
           bad=0
-          for f in build/strata build/libstrata_kq.so build/bin/strata-vision; do
+          for f in build/strata build/bin/strata-vision; do
             [ -f "$f" ] || continue
             needed=$(readelf -d "$f" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p' | tr '\n' ' ')
             glibc=$(readelf -V --wide "$f" | grep -oE 'GLIBC_[0-9.]+' | sort -uV | tail -1)
@@ -253,7 +236,7 @@ jobs:
               echo "::error::$f needs $glibc, newer than Rocky Linux 8's 2.28"; bad=1
             fi
           done
-          ls -l build/strata build/libstrata_kq.so build/bin/strata-vision 2>/dev/null || true
+          ls -l build/strata build/bin/strata-vision 2>/dev/null || true
           exit $bad
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -262,7 +245,6 @@ jobs:
           retention-days: 14
           path: |
             build/strata
-            build/libstrata_kq.so
             build/bin/strata-vision
             build/CMakeCache.txt
             build/CMakeFiles/*/CMakeCUDACompiler.cmake
@@ -316,7 +298,7 @@ jobs:
       - name: strata --version on Rocky Linux 8 / 9, Debian 11, Ubuntu 20.04, with setup.py's CUDA wheels
         run: |
           python3 -m pip install --disable-pip-version-check -q --no-deps --target "$RUNNER_TEMP/wheels" \
-            $(python3 -c "import setup; print(' '.join(setup.CUDA_WHEELS))")
+            $(cd terminal && python3 -c "import setup; print(' '.join(setup.CUDA_WHEELS))")
           unzip -q dist/strata-linux-x64.zip -d "$RUNNER_TEMP/zip"
           bash .github/scripts/linux_floor.sh "$RUNNER_TEMP/zip" "$RUNNER_TEMP/wheels/nvidia/cu13/lib" \
             rockylinux/rockylinux:8.10@sha256:e8a49c5403b687db05d4d67333fa45808fbe74f36e683cec7abb1f7d0f2338c6 \
@@ -336,7 +318,7 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      - run: python -m pip install --disable-pip-version-check -q -r requirements.txt pytest==9.0.2
+      - run: python -m pip install --disable-pip-version-check -q -r terminal/requirements.txt pytest==9.0.2
       # Deselected: three tests that fail on upstream main e88ee39d (0.2.0-beta) itself on Linux (Python 3.12,
       # 2026-10-20: Golden test_yes 25 and test_enter_for_every_question 23 subtests, the parallel download test;
       # this tree fails a subset of them: 20 + 20 and the download test). They are upstream's, not the fork's.
@@ -344,13 +326,13 @@ jobs:
       # "Windows AMD: the driver resets" entry the test still looks for; v0.2.6 4b9e05a2 fails it the same way.
       - name: setup.py
         run: >-
-          python -m pytest -q -p no:cacheprovider tools/test_setup*.py tools/test_make_release.py
-          --deselect tools/test_setup_golden.py::Golden::test_yes
-          --deselect tools/test_setup_golden.py::Golden::test_enter_for_every_question
-          --deselect tools/test_setup_download.py::ParallelDownload::test_a_big_file_comes_over_several_connections
-          --deselect tools/test_setup_amd.py::TdrPointer::test_setup_points_windows_gfx12_to_the_entry
+          python -m pytest -q -p no:cacheprovider terminal/tools/test_setup*.py tools/test_make_release.py
+          --deselect terminal/tools/test_setup_golden.py::Golden::test_yes
+          --deselect terminal/tools/test_setup_golden.py::Golden::test_enter_for_every_question
+          --deselect terminal/tools/test_setup_download.py::ParallelDownload::test_a_big_file_comes_over_several_connections
+          --deselect terminal/tools/test_setup_amd.py::TdrPointer::test_setup_points_windows_gfx12_to_the_entry
       - name: serve
-        run: python -m pytest -q -p no:cacheprovider serve
+        run: python -m pytest -q -p no:cacheprovider terminal/serve
 
   release:
     name: draft release

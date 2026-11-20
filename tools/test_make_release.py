@@ -18,7 +18,7 @@ from pathlib import Path
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "terminal"))
 sys.path.insert(0, str(ROOT / "tools"))
 import make_release  # noqa: E402
 import setup  # noqa: E402
@@ -40,9 +40,9 @@ def build_folder(path: Path, cache: dict, cuda: str, files: dict) -> Path:
 
 
 def engine_build(path: Path, platform="windows", cuda="13.0.88", archs="75-real;86-real;89-real;120",
-                 portable="ON", said=VERSION, kq=True) -> Path:
-    exe, kql = ("strata.exe", "strata_kq.dll") if platform == "windows" else ("strata", "libstrata_kq.so")
-    files = {exe: b"MZ engine=" + said.encode() + b"\n rest", **({kql: b"kq"} if kq else {})}
+                 portable="ON", said=VERSION) -> Path:
+    exe = "strata.exe" if platform == "windows" else "strata"
+    files = {exe: b"MZ engine=" + said.encode() + b"\n rest"}
     return build_folder(path, {"CMAKE_PROJECT_VERSION": ("STATIC", VERSION), "CMAKE_BUILD_TYPE": ("STRING", "Release"),
                                "STRATA_ENABLE_CUDA": ("BOOL", "ON"), "STRATA_PORTABLE": ("BOOL", portable),
                                "CMAKE_CUDA_ARCHITECTURES": ("UNINITIALIZED", archs)}, cuda, files)
@@ -72,7 +72,7 @@ class Pack(unittest.TestCase):
                   LINK, "abc123")
         self.assertEqual(z.name, "strata-windows-x64.zip")
         with zipfile.ZipFile(z) as f:
-            self.assertEqual(f.namelist(), ["strata.exe", "strata_kq.dll", "strata-vision.exe", "BUILD.json"])
+            self.assertEqual(f.namelist(), ["strata.exe", "strata-vision.exe", "BUILD.json"])
             meta = json.loads(f.read("BUILD.json"))
         self.assertEqual(meta, {"version": VERSION, "link": LINK, "source": "release", "archs": [75, 86, 89, 120],
                                 "vision_archs": [75, 86, 89, 120], "ptx": True, "cuda": "13.0", "vision": "gpu",
@@ -103,7 +103,6 @@ class Pack(unittest.TestCase):
             modes = {i.filename: (i.external_attr >> 16) & 0o777 for i in f.infolist()}
         self.assertEqual(modes["strata"], 0o755)
         self.assertEqual(modes["strata-vision"], 0o755)
-        self.assertEqual(modes["libstrata_kq.so"], 0o644)
 
     def test_the_names_are_setups(self):
         win = "windows" if setup.WIN else "linux"
@@ -126,7 +125,6 @@ class Pack(unittest.TestCase):
             "stale binary": dict(e=dict(said="0.1.40")),
             "an unnamed arch list": dict(e=dict(archs="native")),
             "two toolkits": dict(v=dict(cuda="12.9.86")),
-            "no strata_kq": dict(e=dict(kq=False)),
         }
         for why, kw in cases.items():
             with self.subTest(why), tempfile.TemporaryDirectory() as d:

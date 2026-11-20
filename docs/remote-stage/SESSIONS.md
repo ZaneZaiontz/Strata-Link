@@ -37,7 +37,7 @@ back, and only then writes its own half.
   hex>.tmp`, regular files, links not followed, and only those not written to for 10 minutes: another worker may share
   the folder) and says how many. A worker started again right after it was ended in the middle of a save keeps that
   save's temporary file until a later start.
-- A worker started by the node agent (`tools/stage_node.py`): node.json's `"stage_session_dir"` (an absolute path on
+- A worker started by the node agent (`terminal/tools/stage_node.py`): node.json's `"stage_session_dir"` (an absolute path on
   the worker's PC, checked when the agent starts) and optional `"stage_session_keep"` (1 to 1000000). A `/start` with
   `"session_dir": true` appends `--stage-session-dir <that folder>` (and `--stage-session-keep N` when set) to the
   worker's arguments; the caller never sends a path, and `--stage-session-dir` is not among the flags a `/start` may
@@ -219,7 +219,7 @@ Run (no GPU, Windows, MSVC 2022 with CUDA 13.0 headers, `CUDA_VISIBLE_DEVICES=-1
 - `test_slots`: a `FATAL` during a restore ends the engine at once (not alive; the next request starts it again).
 - `test_session_on_unload`: a restore after a load that ends the engine is followed by a new start in the same
   request, with nothing restored into it; a new start that fails then answers EngineDied (503).
-- `tools/test_stage_node.py` (`SessionDirTest`): the worker's argv exactly, without the field (also with a folder in
+- `terminal/tools/test_stage_node.py` (`SessionDirTest`): the worker's argv exactly, without the field (also with a folder in
   node.json, and with extra flags), with it, with the keep (before the extra flags); refused without a folder or with
   a field that is not true or false, nothing started; `--stage-session-dir` is not an extra a `/start` may add;
   node.json's values checked (an empty, relative or non-text folder, a keep without a folder, a keep of 0, `true` or
