@@ -713,6 +713,21 @@ def engine_silence_s(cfg: dict) -> float:
     return float(v)
 
 
+RECOVER_WAIT_S = 300.0
+
+
+def recover_wait_s(cfg: dict) -> float:
+    """The config's "recover_wait_s" - seconds a request waits for the engine to be ready again after a remote stage
+    was lost in the middle of it, before it ends with the remote stage's error (default RECOVER_WAIT_S; 0 = it ends at
+    once, as before).  ValueError for anything but a number >= 0."""
+    v = cfg.get("recover_wait_s")
+    if v is None:
+        return RECOVER_WAIT_S
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0:
+        raise ValueError(f'"recover_wait_s" must be a number of seconds >= 0 (0 = off), not {v!r}')
+    return float(v)
+
+
 def layer_split_value(cfg: dict) -> str:
     """#644: the config's "layer_split" as the engine's --layer-split value: "auto" (the default), or the FIRST LAYER of
     each later GPU's share - one rising number per GPU after the first, e.g. "24,36,42" for 4 GPUs (layers 0-23 on the

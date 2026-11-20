@@ -178,6 +178,7 @@ from serve.server_parts.engines import (  # noqa: F401  (moved unchanged, file s
     PARALLEL_MAX,
     QueueCancelled,
     QueueWaitExpired,
+    RECOVER_WAIT_S,
     SPLIT_MAX_LANES,
     ServerStopping,
     SessionRefused,
@@ -207,6 +208,7 @@ from serve.server_parts.engines import (  # noqa: F401  (moved unchanged, file s
     engine_exit_words,
     engine_has_text,
     engine_silence_s,
+    recover_wait_s,
     experts_loading_words,
     gpu_all_off,
     gpu_list,
@@ -432,6 +434,7 @@ def drop_history_reasoning(messages):
 
 QUEUE_BEAT_S = 10.0         # a request waiting for the single turn sends a keep-alive this often (#1619)
 PREFILL_BEAT_S = 5.0   # a real (empty) chunk this often while a prompt is read, for clients that ignore SSE comments
+RECOVERING = "system dropped - recovering..."
 
 
 # #4271: a streaming client that stops reading (a hung process, a network that dropped) leaves the thread that writes to
@@ -778,6 +781,7 @@ class StrataEngine:
         self.spawn = (exe, list(args), cwd, log, env, False, cpus)   # to start it again after it died (issue #27)
         # the all-cards split engine (sFNX, strata-split-N[-arch]): its GEN parser accepts fewer keys than Strata's engine (tests/split/test_split_gen_keys.py pins them)
         self.split_engine = os.path.basename(str(exe)).startswith("strata-split")
+        self.remote_stage = "--remote-stage" in args
         self.session_save_reclaim = '--session-save-reclaim' in args
         paths = {k: v for k, v in zip(args, args[1:]) if k in ("--native", "--pack")}
         self.model_path = paths.get("--native") or paths.get("--pack", "pack/full")
@@ -4104,6 +4108,7 @@ class Service:
         # while a model is loading or a request is between MCP rounds; the engine's own slots remain unchanged.
         self.max_queue: int | None = None
         self.queue_timeout_s: float | None = None
+        self.recover_wait_s = RECOVER_WAIT_S
         self.admission_reserved = 0
         self.admission_rejected = 0
         self.queue_timeouts = 0
@@ -4860,6 +4865,50 @@ class Service:
                 self.engine._ctl_held = False
                 ctl.release()
             self.fifo.release()
+
+    def _recover(self, lost, cancel, turn, st):
+        """A remote stage was lost in the middle of a request (recover_wait_s): the engine is made ready again on a
+        thread - the main engine is started again and connects to its worker, which the worker's node agent restarts
+        if it ended - while the client hears ("ping", status) every PREFILL_BEAT_S.  True once it is ready, False when
+        the client left; raises `lost`, today's error, when the start failed or took longer than recover_wait_s.  The
+        request's turn stays held until the start ends, even when the request stops waiting first."""
+        print(f"[strata] the request waits up to {self.recover_wait_s:g} s for the engine to be ready again, then "
+              "continues its answer (recover_wait_s)", flush=True)
+        status = {"state": "recovering", "message": RECOVERING, "reason": str(lost)}
+        with self.status_lock:
+            st["phase"] = "recovering"
+        failed = []
+
+        def start():
+            try:
+                if hasattr(self.engine, "settle_stage_exit"):
+                    self.engine.settle_stage_exit()
+                self.ensure_loaded()
+            except Exception as e:
+                failed.append(e)
+        t0 = time.monotonic()
+        worker = threading.Thread(target=start, daemon=True)
+        worker.start()
+        try:
+            while True:
+                yield "ping", status
+                worker.join(min(PREFILL_BEAT_S, max(0.0, self.recover_wait_s - (time.monotonic() - t0))))
+                if not worker.is_alive() or cancel.is_set() or time.monotonic() - t0 >= self.recover_wait_s:
+                    break
+        finally:
+            if worker.is_alive():
+                later = turn.pop_all()
+                threading.Thread(target=lambda: (worker.join(), later.close()), daemon=True).start()
+        if cancel.is_set():
+            return False
+        if worker.is_alive() or failed:
+            why = (f"the engine did not start: {failed[0]}" if failed
+                   else f"the engine was not ready after {self.recover_wait_s:g} s")
+            print(f"[strata] recovery ended: {why}; the request ends with the remote stage's error", flush=True)
+            raise lost
+        print(f"[strata] the engine is ready again after {time.monotonic() - t0:.0f} s: continuing the answer",
+              flush=True)
+        return True
 
     def _say_died(self, e: Exception) -> None:
         """The server window's line for an engine that died (or was ended, #481) in the middle of a request."""
@@ -5880,6 +5929,16 @@ class Service:
         tail = ""                                       # the last characters written (the newlines before a call)
         answered, close_retried = False, False          # #1053: content or a call came out; the thinking was closed
         nf_retried = False                              # #879: the request was sent again after non-finite logits
+        recovered_n = None
+
+        def recoverable(e):
+            """A remote stage lost in the middle of this request, which keeps the request and continues its answer
+            (recover_wait_s): not with batch slots or pictures, and not twice with no new token between."""
+            remote = isinstance(e, RemoteStageLost) or (isinstance(e, EngineDied) and getattr(e, "restarts", True)
+                                                        and getattr(self.engine, "remote_stage", False) is True)
+            return (remote and self.recover_wait_s > 0 and not par and not emb and not cancel.is_set()
+                    and n < max_new and n != recovered_n)
+
         timings, before = None, None                    # this request's timings; the engine's `last` before it
         recovery_count, reasoning_text, repeat_coverage = 0, "", 0.0
         looped, next_loop_check = False, LOOP_CHECK_EVERY       # #728: reasoning that repeats whole passages
@@ -6019,7 +6078,7 @@ class Service:
                             pass_sampling = sampling   # no hold: the engine gets the caller's own sampler object, as before P2
                         gen = self.engine.generate(prompt, max_new - n, pass_sampling, cancel, embeddings=emb) if emb \
                             else self.engine.generate(prompt, max_new - n, pass_sampling, cancel)
-                        recover_prompt = None
+                        recover_prompt, lost = None, None
                         seg, wrap, leaving = [], False, False   # this pass's tokens; the budget is reached; closed
                         nonfinite = False               # #879: the engine ended this pass on non-finite logits
                         opens = False                   # the thinking is over: write the forced call's opening
@@ -6110,7 +6169,9 @@ class Service:
                         except EngineDied as e:
                             finish = "error"
                             self._say_died(e)
-                            raise
+                            if not recoverable(e):
+                                raise
+                            lost = e
                         except QueueWaitExpired:
                             finish = "error"
                             timed_out = True
@@ -6118,7 +6179,9 @@ class Service:
                         except ValueError as e:             # the engine's ERR line (it may have ended after it)
                             finish = "error"
                             print(f"[strata] the engine reported an error: {e}", flush=True)
-                            raise
+                            if not recoverable(e):
+                                raise
+                            lost = e
                         except GeneratorExit:               # the client went away: an engine that never acknowledges
                             leaving = True                  # the STOP below is ended, but no error replaces this
                             raise
@@ -6135,6 +6198,12 @@ class Service:
                             segment_done = getattr(self.engine, "last", None)
                             if segment_done is not None and segment_done is not segment_before:
                                 segments.append(dict(segment_done))
+                        if lost is not None:
+                            if not (yield from self._recover(lost, cancel, turn, st)):
+                                break
+                            recovered_n, finish = n, "length"
+                            prompt = prompt + seg
+                            continue
                         if nonfinite and not cancel.is_set():
                             # #879: the engine emitted none of the poisoned window's tokens and reads its next prompt
                             # from token 0.  Nothing sent yet: the same request once more, unseen by the client
@@ -6662,7 +6731,11 @@ def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel
             # a PP line: the prompt is being read and there is nothing to say yet.  It used to be only the SSE comment;
             # now it carries the progress when the client asked, and stays the comment when there is nothing to report.
             pp = prompt_progress(svc) if want_progress else None
-            if pp is not None:
+            if x is not None:
+                beat = time.monotonic()
+                yield from first()
+                yield {**chunk({}), "strata_status": x}
+            elif pp is not None:
                 yield from first()
                 yield {**chunk({}), "prompt_progress": pp}
             elif time.monotonic() - beat >= PREFILL_BEAT_S:
@@ -6813,7 +6886,7 @@ def anthropic_events(svc: Service, req: dict, ids, thinking, tools, max_new, can
     for kind, x in svc.run(ids, thinking, tools, max_new, req, cancel, force=force, declared_only=True,
                            deferred=deferred):
         if kind == "ping":
-            yield None
+            yield ("ping", {"type": "ping", "strata_status": x}) if x is not None else None
             continue
         if kind == "event":
             ev: Event = x
@@ -8194,7 +8267,7 @@ def make_handler(svc: Service):
                 done = None
                 for kind, x in svc.run(ids, thinking, tools, max_new, req, cancel, force):
                     if kind == "ping":
-                        yield None
+                        yield {**asm.in_progress(), "strata_status": x} if x is not None else None
                     elif kind == "event":
                         yield from asm.feed(x)
                     elif kind == "done":
@@ -9011,6 +9084,7 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
             exe = cfg["exe"] if os.path.isabs(cfg["exe"]) else os.path.abspath(os.path.join(cfg.get("cwd") or ".", cfg["exe"]))
         try:
             silence = engine_silence_s(cfg)             # #481: checked before the (minutes-long) start
+            recover = recover_wait_s(cfg)
             apply_ready_timeout(cfg)
         except ValueError as e:
             raise SystemExit(f"[strata] config {e}")
@@ -9059,6 +9133,7 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
     svc.max_queue = max_queue
     svc.queue_timeout_s = float(queue_timeout) if queue_timeout is not None else None
     if a.engine == "strata":                            # the model card's sampling when nothing else is said (see MODEL_CARD_SAMPLING)
+        svc.recover_wait_s = recover
         svc.model_arch = cfg.get("arch") or "qwen4exp"
         svc.set_family(None)
         requested = cfg.get("parallel")

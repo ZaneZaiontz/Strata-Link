@@ -1240,6 +1240,7 @@ class EngineWiring(unittest.TestCase):
         self.addCleanup(lambda: self.svc.engine.close())
         self.svc = Service(self.e, ByteTokenizer(), ChatTemplate(Path(__file__).parent / "chat_template.jinja"))
         self.svc.stages.agents_cfg = False
+        self.svc.recover_wait_s = 0
 
     def request(self):
         return list(self.svc.run([1], False, [], 8, {}, threading.Event()))
@@ -1269,6 +1270,7 @@ class EngineWiring(unittest.TestCase):
         self.e = self.start("--exit-after", "1.5")
         self.svc = Service(self.e, ByteTokenizer(), ChatTemplate(Path(__file__).parent / "chat_template.jinja"))
         self.svc.stages.agents_cfg = False
+        self.svc.recover_wait_s = 0
         with self.assertRaises(Exception):
             self.request()
         old = self.e.proc
@@ -1277,6 +1279,16 @@ class EngineWiring(unittest.TestCase):
         self.assertIsNot(self.e.proc, old)
         self.assertEqual(old.poll(), 1)
         self.assertIsNone(self.e.stage_leaving)
+
+    def test_a_request_continues_after_the_link_is_lost(self):
+        """With recover_wait_s the request that lost the link is kept: it says it is recovering, the engine is started
+        again, and the same request is answered."""
+        self.svc.recover_wait_s = 30
+        events = self.request()
+        self.assertTrue([x for kind, x in events if kind == "ping" and x and x["state"] == "recovering"])
+        self.assertEqual(events[-1][1]["completion_tokens"], 1)
+        self.assertIsNone(self.e.proc.poll())
+        self.assertEqual(self.svc.metrics(workers=True)["stages"]["workers"][0]["reconnects"], 1)
 
     def test_restart_before_the_first_look(self):
         """The Monitor opened after the engine was started again: that start's link is a reconnect all the same."""
