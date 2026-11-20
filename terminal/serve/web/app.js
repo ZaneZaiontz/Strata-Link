@@ -1325,7 +1325,7 @@ function updateAssistant(el, m, streaming) {
     if (settings.math) StrataMath.hydrate(bubble);
     if (streaming) bubble.classList.add("cursor"); else bubble.classList.remove("cursor");
   }
-  el.querySelector(".meta-text").textContent = m.meta || (streaming ? "" : m.stopped ? tr("chat.stopped", "Stopped") : "");
+  el.querySelector(".meta-text").textContent = m.meta || (streaming ? m.status || "" : m.stopped ? tr("chat.stopped", "Stopped") : "");
   el.querySelector("[data-msg-copy]").hidden = streaming || !m.text;
   const finish = el.querySelector("[data-msg-finish]");
   if (finish) finish.hidden = streaming || !canFinishFromThinking(m);
@@ -1645,6 +1645,8 @@ async function generateReply(opts = {}) {
         }
         const d = (j.choices && j.choices[0] && j.choices[0].delta) || {};
         const lastTool = m.tools && m.tools.length ? m.tools[m.tools.length - 1] : null;   // a new round after a tool
+        if (j.strata_status) m.status = tr("chat.recovering", "system dropped - recovering...");
+        else if (d.content || d.reasoning_content || d.tool_calls || j.strata_mcp) delete m.status;
         if (d.reasoning_content) {
           if (!firstAt) firstAt = performance.now();
           if (!thinkStart) thinkStart = performance.now();
@@ -1664,6 +1666,7 @@ async function generateReply(opts = {}) {
     if (e.name === "AbortError") m.stopped = true;
     else { m.error = e.message || String(e); toast("error", tr("toast.requestFailed", "The request failed"), m.error, 6000); }
   }
+  delete m.status;
   const cut = busy.cut;                                      // an interjection ended it: kept as written, marked interrupted
   if (cut) m.interrupted = true;
   if (thinkStart && m.thinkSecs == null) m.thinkSecs = (performance.now() - thinkStart) / 1000;

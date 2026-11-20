@@ -22,6 +22,7 @@
   "chat.newToastText": "El chat anterior está en la lista de la izquierda.",
   "chat.projectionOff": "proyección desactivada",
   "chat.projectionOn": "proyección activada",
+  "chat.recovering": "sistema caído - recuperando...",
   "chat.stopped": "Detenida",
   "chat.stoppedLower": "detenida",
   "chat.tokens": {"one": "{n} token", "other": "{n} tokens"},

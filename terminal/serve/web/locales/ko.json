@@ -22,6 +22,7 @@
   "chat.newToastText": "이전 채팅은 왼쪽 목록에 있습니다.",
   "chat.projectionOff": "프로젝션 꺼짐",
   "chat.projectionOn": "프로젝션 켜짐",
+  "chat.recovering": "시스템 연결 끊김 - 복구 중...",
   "chat.stopped": "중지됨",
   "chat.stoppedLower": "중지됨",
   "chat.tokens": {"other": "토큰 {n}개"},

@@ -25,6 +25,7 @@
   "chat.newToastText": "הצ'אט שהייתם בו נמצא ברשימת הצ'אטים.",
   "chat.projectionOff": "הקרנה כבויה",
   "chat.projectionOn": "הקרנה פעילה",
+  "chat.recovering": "מערכת נפלה - משחזר...",
   "chat.stopped": "נעצר",
   "chat.stoppedLower": "נעצר",
   "chat.tokens": {
