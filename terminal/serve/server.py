@@ -435,6 +435,7 @@ def drop_history_reasoning(messages):
 QUEUE_BEAT_S = 10.0         # a request waiting for the single turn sends a keep-alive this often (#1619)
 PREFILL_BEAT_S = 5.0   # a real (empty) chunk this often while a prompt is read, for clients that ignore SSE comments
 RECOVERING = "system dropped - recovering..."
+STAGE_WAIT_BEAT_S = 10.0
 
 
 def recovery_status(lost) -> dict:
@@ -4878,12 +4879,13 @@ class Service:
                 ctl.release()
             self.fifo.release()
 
-    def _recover(self, lost, cancel, turn, st):
+    def _recover(self, lost, cancel, turn, st, t0):
         """A remote stage was lost in the middle of a request (recover_wait_s): the engine is made ready again on a
         thread - the main engine is started again and connects to its worker, which the worker's node agent restarts
         if it ended - while the client hears ("ping", status) every PREFILL_BEAT_S.  True once it is ready, False when
-        the client left; raises `lost`, today's error, when the start failed or took longer than recover_wait_s.  The
-        request's turn stays held until the start ends, even when the request stops waiting first."""
+        the client left; raises `lost`, today's error, when the start failed or was not over recover_wait_s after the
+        loss (t0, time.monotonic()).  The request's turn stays held until the start ends, even when the request stops
+        waiting first."""
         print(f"[strata] the request waits up to {self.recover_wait_s:g} s for the engine to be ready again, then "
               "continues its answer (recover_wait_s)", flush=True)
         status = recovery_status(lost)
@@ -4898,7 +4900,6 @@ class Service:
                 self.ensure_loaded()
             except Exception as e:
                 failed.append(e)
-        t0 = time.monotonic()
         worker = threading.Thread(target=start, daemon=True)
         worker.start()
         try:
@@ -5941,7 +5942,21 @@ class Service:
         tail = ""                                       # the last characters written (the newlines before a call)
         answered, close_retried = False, False          # #1053: content or a call came out; the thinking was closed
         nf_retried = False                              # #879: the request was sent again after non-finite logits
-        recovered_n, recovering = None, None
+        recovered_n, recovering, lost_at, dropped = None, None, None, None
+
+        def overdue():
+            """At a heartbeat: the engine said again that it waits for its worker (INFO remote_stage_wait=) and
+            recover_wait_s has passed since the remote stage was lost (lost_at), with no new token since.  The pass is
+            then stopped, which ends that wait at once, and the request ends with the loss.  A wait before any loss was
+            reported (a link found lost as the pass began) starts the clock at that wait's start, STAGE_WAIT_BEAT_S
+            before its first line.  A prompt read again after the loss is never stopped."""
+            nonlocal lost_at, waited
+            beat, waited = waited, getattr(self.engine, "stage_wait_at", None)
+            if beat == waited or self.recover_wait_s <= 0 or par or emb:
+                return False
+            if lost_at is None:
+                lost_at = time.monotonic() - STAGE_WAIT_BEAT_S
+            return time.monotonic() - lost_at >= self.recover_wait_s
 
         def recoverable(e):
             """A remote stage lost in the middle of this request, which keeps the request and continues its answer
@@ -6090,7 +6105,8 @@ class Service:
                             pass_sampling = sampling   # no hold: the engine gets the caller's own sampler object, as before P2
                         gen = self.engine.generate(prompt, max_new - n, pass_sampling, cancel, embeddings=emb) if emb \
                             else self.engine.generate(prompt, max_new - n, pass_sampling, cancel)
-                        recover_prompt, lost = None, None
+                        recover_prompt, lost, gave_up = None, None, False
+                        waited = getattr(self.engine, "stage_wait_at", None)
                         seg, wrap, leaving = [], False, False   # this pass's tokens; the budget is reached; closed
                         nonfinite = False               # #879: the engine ended this pass on non-finite logits
                         opens = False                   # the thinking is over: write the forced call's opening
@@ -6104,10 +6120,13 @@ class Service:
                                 if t is None:               # heartbeat while the engine is quiet
                                     last_print = self._progress(last_print, st=st)
                                     last_out = time.perf_counter()
+                                    if overdue():
+                                        gave_up = True
+                                        break
                                     yield "ping", recovering
                                     continue
                                 n += 1
-                                recovering = None
+                                recovering, lost_at, dropped = None, None, None
                                 if first_engine_token_s is None:
                                     first_engine_token_s = round(time.perf_counter() - waiting, 3)
                                     with self.status_lock:
@@ -6211,8 +6230,19 @@ class Service:
                             segment_done = getattr(self.engine, "last", None)
                             if segment_done is not None and segment_done is not segment_before:
                                 segments.append(dict(segment_done))
+                        if gave_up:
+                            if cancel.is_set():
+                                break
+                            finish = "error"
+                            print(f"[strata] nothing new {self.recover_wait_s:g} s after the remote stage was lost: the "
+                                  "request ends with its error (recover_wait_s)", flush=True)
+                            raise dropped or RemoteStageLost("remote stage: the worker did not come back within "
+                                                             f"recover_wait_s ({self.recover_wait_s:g} s)")
                         if lost is not None:
-                            if not (yield from self._recover(lost, cancel, turn, st)):
+                            if lost_at is None:
+                                lost_at = time.monotonic()
+                            dropped = lost
+                            if not (yield from self._recover(lost, cancel, turn, st, lost_at)):
                                 break
                             recovered_n, finish, recovering = n, "length", recovery_status(lost)
                             prompt = prompt + seg

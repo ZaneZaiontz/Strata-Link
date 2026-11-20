@@ -60,6 +60,24 @@ class DroppingEngine(MockEngine):
             yield t
 
 
+class WaitingEngine(DroppingEngine):
+    """Stays loaded when it loses its remote stage (an engine that says INFO remote_stage_kept=1), and once `drops` are
+    used up every request waits for a worker that does not come back: INFO remote_stage_wait= every 50 ms until the
+    request is stopped."""
+
+    def alive(self):
+        return True
+
+    def generate(self, ids, max_new, sampling, cancel, embeddings=None):
+        if self.drops:
+            yield from super().generate(ids, max_new, sampling, cancel)
+            return
+        while not cancel.is_set():
+            time.sleep(0.05)
+            self.stage_wait_at = time.time()
+            yield None
+
+
 class Recovery(unittest.TestCase):
     def start(self, engine, wait=5.0):
         """The test's server (made once) on a new engine."""
@@ -219,6 +237,29 @@ class Recovery(unittest.TestCase):
         content, chunks = self.streamed()
         self.assertEqual(chunks[-1]["error"]["message"], LOST)
         self.assertEqual(self.engine.restarts, 1)
+
+    def test_a_kept_engine_that_waits_for_its_worker_is_stopped_at_the_limit(self):
+        """The engine stays up after the drop, and the continued request waits for a worker that never comes back: it
+        ends with the drop's error recover_wait_s after the drop, not when the engine's own wait runs out."""
+        self.start(WaitingEngine(ANSWER, drops=[100]), wait=1.0)
+        t0 = time.monotonic()
+        content, chunks = self.streamed()
+        self.assertGreaterEqual(time.monotonic() - t0, 1.0)
+        self.assertLess(time.monotonic() - t0, 3.0)
+        self.assertEqual(content, LIST[:90].rstrip("\n"))
+        self.assertTrue([c for c in chunks if "strata_status" in c])
+        self.assertEqual(chunks[-1]["error"]["message"], LOST)
+        self.assertEqual(self.engine.restarts, 0)
+
+    def test_a_link_found_lost_at_the_start_counts_from_the_engines_wait(self):
+        """The engine's first wait line comes STAGE_WAIT_BEAT_S (10 s) into its wait, so with recover_wait_s 5 the
+        request ends at that first line."""
+        self.start(WaitingEngine(ANSWER), wait=5.0)
+        t0 = time.monotonic()
+        code, _, text = self.chat(stream=False)
+        self.assertLess(time.monotonic() - t0, 2.0)
+        self.assertEqual(code, 503)
+        self.assertIn("recover_wait_s (5 s)", json.loads(text)["error"]["message"])
 
 
 if __name__ == "__main__":
