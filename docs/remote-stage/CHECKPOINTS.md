@@ -194,12 +194,16 @@ checkpoint there would run the worker's layers from `resume` on an empty session
   parts, so a relay chain behaves as before.
 - A CkptRestore that finds the link lost makes it again and falls back as for a missing id. If connecting again
   fails, or the worker reports an error of its own, the `ERR` line starts with that error (`remote stage: ...`,
-  `remote stage (worker): ...`), so the server answers 503, not 400.
+  `remote stage (worker): ...`), so the server answers 503, not 400. A failed reconnect ends only that request: the
+  main prints `INFO remote_stage_kept=1` first, closes the link and stays loaded (not with `--pipeline-windows` or
+  `--batch`). A worker error there still ends the engine.
 - A CkptSave that finds the link lost, or that the worker fails, is in the middle of a request (after the part's
   windows): the request ends as for a lost window (the engine stays and closes the link), the `ERR` line again
   starting with the link's or the worker's error.
 - What the check cannot see: a worker PC that vanished without closing (power, cable) looks alive until TCP
-  keepalive notices it (about a minute); a request in that time finds the loss at its first message, as before. A
+  keepalive notices it (about a minute); a request in that time finds the loss at its first message. When that
+  message is a Reset or a CkptRestore, the main waits for the reply with `INFO remote_stage_wait=S` lines, a STOP
+  ends the wait (the server sends one at `recover_wait_s`), and the request ends with the engine kept, as above. A
   loss between the check and the request's first window is found at that window, and that request ends. With a
   relay, the check sees only the main process's own link: a next worker that restarted while the main process was
   idle is found by the relay at the request's first message to it, an error that ends the engine (read from the

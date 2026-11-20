@@ -147,11 +147,20 @@ connect returns: the server's frozen-engine check (`ENGINE_STALL_S`, 90 s withou
 engine first, and the request would get "frozen" instead of the link's error. Not at the engine's start: the server
 then waits for READY and reads INFO lines as settings. A worker
 down for longer is still found: the request ends with the error, the engine stays, and the next request tries
-anew. A link lost in the middle of a request, or the worker's own error, ends that request on the serial paths (a
+anew. A worker PC that vanished without a word between requests (power, cable) passes the start's `alive` check, and
+the request's reset or checkpoint (or park) restore then gets no reply. That wait has the same `INFO
+remote_stage_wait=S` lines (`remote_waiting`), and its poll looks at the request's stop flag
+(`StageClient::reset`, `ckpt_restore` and `park_restore` take one), so the server's `recover_wait_s` stops it in
+time; without them the engine sat silent for up to `STRATA_REMOTE_TIMEOUT_S` and ended when the reconnect after it
+failed. A STOP there, or a failed reconnect after a lost link, ends the request with `INFO remote_stage_kept=1` and
+the link closed (`remote_start_failed`); a STOP while connecting again at those places printed the `ERR` alone
+before, and the server waited 15 s for an exit that did not come. A link lost in the middle of a request, or the worker's own error, ends that request on the serial paths (a
 decode window, its commit, a prompt chunk, a turn checkpoint): `remote_survivable` in `generate.cpp` waits for the GPU
 (a prompt chunk's own layers may still run), prints `INFO remote_stage_kept=1` before the `ERR`, and closes the link;
 the engine stays (without the wait for the GPU, the first cut in the middle of a prompt was followed by an illegal
-memory access reported at the next request's K/V reset; with it, seven cuts there were not. The prompt path also kept
+memory access reported at the next request's K/V reset; with it, seven cuts there were not. The prompt path's own
+early return after a failed send waits for the card too, as its STOP does, for a relay worker that stays up after
+one; relays were not run. The prompt path also kept
 the failed chunk's error, so the next prompt read failed with it until
 `Prefill::drain_pipeline` cleared `recv_err_`: both seen on GPUs). A GPU fault,
 `--pipeline-windows` and `--batch` still end it. The server keeps that request:
@@ -172,7 +181,9 @@ sent, closed as soon as the first sends again, the first answered at once, and t
 taking over at the first's next idle second; a chunk's reply held 1.5 s by a relay's handler, then
 0.4 s until the first's next message: not taken over), with `STRATA_REMOTE_TAKEOVER_S=0` (a second main not served
 while the first is silent for 2.5 s), which errors count as a lost link, and `alive` (true on an idle link; false,
-as lost, after a take-over, after the worker stopped and after bytes no message asked for; no check over 100 ms).
+as lost, after a take-over, after the worker stopped and after bytes no message asked for; no check over 100 ms),
+and a reset the worker does not answer ended by a stop flag 0.3 s in, as cancelled and not as lost, the link marked
+failed.
 The main process's reconnect, its `INFO remote_stage_wait` lines and the agent's restarts were run on GPUs later, by
 injecting faults ([The recovery's open points](#the-recoverys-open-points-2026-10-13)). The node agent
 (`tools/stage_node.py`) starts a

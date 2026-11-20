@@ -329,8 +329,11 @@ turn read 36 tokens in 2.1 s (4.8 s to its answer, the reconnect included); with
 worker killed between turns comes back as a new process with nothing kept, and the next turn reads from token 0.
 Without `--prompt-cache` there are no checkpoints, so every turn reads from token 0 anyway. That needs the
 loss seen: a worker process that ended or a link that was reset is seen at once, but when the worker's PC vanished
-without a word a request in the first minute or so (before the keepalive notices) waits for its first reply until
-the link's own timeouts end it: the keepalive, or at most `STRATA_REMOTE_TIMEOUT_S`. A link lost in the middle of a
+without a word a request in the first minute or so (before the keepalive notices) waits for its first reply. When
+that is the reply to its reset or checkpoint restore (a new conversation, or a reply sent back changed), the main
+process prints `INFO remote_stage_wait=S` meanwhile and the server stops it at `"recover_wait_s"`; the request then
+ends and the main engine stays. A request that continues the live session waits for its first prompt chunk or window
+instead, up to `STRATA_REMOTE_TIMEOUT_S`, and is then recovered as below. A link lost in the middle of a
 request ends that request but not the main engine (with `--pipeline-windows` or `--batch` it still ends the engine),
 and the server keeps the request and continues it
 ([A PC drops in the middle of an answer](#a-pc-drops-in-the-middle-of-an-answer)).
@@ -405,8 +408,8 @@ What a client sees meanwhile, about every 5 s:
 Nothing is ever written into the answer's own text. `"recover_wait_s"` in the server's config is how long a request
 waits, counted from the drop (default 300 s; 0 turns this off and gives the behaviour before it). It also limits the
 engine's own reconnect: a main engine that stayed up and still waits for its worker when the time is up (it would
-try for `STRATA_REMOTE_CONNECT_S`, 180 s) is stopped then, and a request that finds the link lost as it starts
-counts from the start of the engine's wait. The server checks at the engine's wait lines, which come every 10 s, so
+try for `STRATA_REMOTE_CONNECT_S`, 180 s) is stopped then, and a request that finds the link lost as it starts, or
+gets no reply to its reset or checkpoint restore, counts from the start of the engine's wait. The server checks at the engine's wait lines, which come every 10 s, so
 the end can come up to 10 s late. A prompt the engine reads again after it connected is never cut short; that time
 comes on top. When the time is up, when the engine cannot be started, or when the engine is lost again before it
 wrote one more token, the request ends as before: a streamed answer with an error event after the text it already
@@ -447,6 +450,22 @@ connections while it is cut, no shaping):
 | the link cut for 2 s 3-6 s into reading a 13,844-token prompt (4 runs) | the same process | 7 status chunks, then the answer | first token at 13.0-16.1 s (7.6-7.9 s without a drop) |
 | the worker engine (`kill -9`) in the middle of the answer, agent wait 5 s, no proxy | the same process | 7 status chunks, then the rest | 43.4 s |
 | the link cut and left cut | the same process | 18 status chunks, then the error event after 12 items | the request ended 179 s after the cut (`STRATA_REMOTE_CONNECT_S`); the next request after the link came back was answered in 3.1 s |
+| the same with `"recover_wait_s": 30` (3 runs, a later build) | the same process | 3 status chunks, then the error event after 7 items | the request ended 30.3-30.5 s after the cut; the next request after the link came back was answered in 0.3 s |
+| the link cut for 5 s in the middle of the answer, default `"recover_wait_s"` (3 runs) | the same process | 2 status chunks, then the rest | 6.6-6.9 s |
+
+A worker PC that vanishes without a word between turns, played by the same proxy going silent (it forwards nothing
+and keeps every connection open, then closes them all when the link comes back), on a 3,100-token conversation:
+
+| The next request | `"recover_wait_s"` | Link | What it got | Main engine |
+|---|---|---|---|---|
+| turn 3 with turn 2's reply changed (a checkpoint restore; 3 runs) | 30 | left silent | 503 after 30.1 s; the next request after the link came back answered in 0.5 s | the same process |
+| the same (1 run) | 300 | left silent | 503 after 310 s; the next request answered in 0.5 s | the same process |
+| the same (2 runs) | 30 | back after 15 s | the answer after 19.0 s | the same process |
+| a new conversation (a reset; 1 run each) | 30 | left silent / back after 15 s | 503 after 29.1 s / the answer after 15.5 s | the same process |
+| turn 3 continuing the live session (1 run each) | 30 | left silent / back after 15 s | 503 after 328 s (`STRATA_REMOTE_TIMEOUT_S`, then 30 s) / the answer after 15.8 s | the same process |
+
+Before this, a reset or restore that got no reply waited silently for up to `STRATA_REMOTE_TIMEOUT_S`, a STOP could
+not end it, and when the reconnect after it failed the main engine ended and was started again.
 
 ## Overlapping the decode windows (`--pipeline-windows 2`)
 
