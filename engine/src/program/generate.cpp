@@ -17584,6 +17584,24 @@ int main(int argc, char** argv) {
             return remote_main && !pipe && o.batch == 0 && cudaDeviceSynchronize() == cudaSuccess &&
                    (strata::net::stage_link_lost(e) || e.rfind("remote stage (worker): ", 0) == 0);
         };
+        // A request's reset or restore (its call in `call`): `INFO remote_stage_wait=` lines while its reply is
+        // waited for, and a STOP ends that wait at once - a worker that vanished without a word between requests
+        // (power, cable) answers nothing, and the link would see it only after STRATA_REMOTE_TIMEOUT_S
+        auto remote_waiting = [&](auto&& call) {
+            const RemoteWaitLines lines(true);
+            return call(&stop_req);
+        };
+        // That reset or restore failed with the link lost and could not make it again, or a STOP came while it
+        // waited or connected again: the request ends with `e` and `what`.  The engine stays after a STOP, or where
+        // remote_survivable keeps it, with the link closed so the next request connects again; false: it ends.
+        auto remote_start_failed = [&](const std::string& e, const std::string& what) {
+            const bool kept = remote_cancelled || strata::net::stage_wait_cancelled(e) ||
+                              (strata::net::stage_link_lost(e) && remote_survivable(e));
+            if (kept) remote_link.close();
+            std::printf("%sERR %s%s\n", kept ? "INFO remote_stage_kept=1\n" : "", e.c_str(), what.c_str());
+            std::fflush(stdout);
+            return kept;
+        };
         auto remote_positions = [&](bool table, int64_t cells, std::string& e) -> bool {
             remote_pos_cells = table ? cells : 0;
             return remote_link.positions(table ? mrope_host.data() : nullptr, cells, e) || remote_relink(e);
@@ -20986,13 +21004,13 @@ int main(int argc, char** argv) {
                     remote_park_extra.clear();   // (taken: its checkpoints are this chain's now)
                     const auto tw = Clock::now();
                     bool missing = park_id == 0;
-                    if (!missing &&
-                        !remote_link.park_restore(park_id, (int64_t) live.size(), remote_keep(), missing, err)) {
-                        if (!missing && strata::net::stage_link_lost(err)) {
+                    if (!missing && !remote_waiting([&](auto stop) {
+                            return remote_link.park_restore(park_id, (int64_t) live.size(), remote_keep(), missing,
+                                                            err, stop);
+                        })) {
+                        if (!missing && (strata::net::stage_link_lost(err) || strata::net::stage_wait_cancelled(err))) {
                             if (!remote_relink(err)) {
-                                std::printf("ERR %s (restoring a parked conversation)\n", err.c_str());
-                                std::fflush(stdout);
-                                if (remote_cancelled) continue;   // (a STOP: the link stays closed, the engine stays)
+                                if (remote_start_failed(err, " (restoring a parked conversation)")) continue;
                                 return 1;
                             }
                             missing = true;
@@ -21068,10 +21086,10 @@ int main(int argc, char** argv) {
                 strata::core::session_zero(ss, g, nullptr, main_cs);
                 cudaStreamSynchronize(main_stream);
                 // (a link lost while idle: made again, then the reset again - the new worker holds no checkpoint
-                // parts, so its reset keeps none; else the engine ends, as mid-request, but for a STOP while
-                // connecting again: `remote_cancelled`, the caller's request ends and the link stays closed)
-                if (remote_main && !remote_link.reset(keep, err) &&
-                    !(remote_relink(err) && remote_link.reset({}, err)))
+                // parts, so its reset keeps none; else the caller's request ends: remote_start_failed)
+                if (remote_main && !remote_waiting([&](auto stop) { return remote_link.reset(keep, err, stop); }) &&
+                    !(remote_relink(err) &&
+                      remote_waiting([&](auto stop) { return remote_link.reset({}, err, stop); })))
                     return false;
                 for (auto& st : stages) {
                     const strata::core::OnDevice on(st->dev);
@@ -21082,9 +21100,7 @@ int main(int argc, char** argv) {
             };
             if (resume == 0) {
                 if (!session_from0(remote_keep())) {
-                    std::printf("ERR %s\n", err.c_str());
-                    std::fflush(stdout);
-                    if (remote_cancelled) continue;   // (a STOP while connecting again: the engine stays)
+                    if (remote_start_failed(err, "")) continue;
                     return 1;
                 }
                 checks.clear();
@@ -21107,9 +21123,7 @@ int main(int argc, char** argv) {
                     // checkpoint missed shows up as a difference.  (A remote stage: the worker's session too, its
                     // checkpoint parts kept.)
                     if (!session_from0(remote_keep())) {
-                        std::printf("ERR %s\n", err.c_str());
-                        std::fflush(stdout);
-                        if (remote_cancelled) continue;
+                        if (remote_start_failed(err, "")) continue;
                         return 1;
                     }
                     if (remote_fresh) {   // the link was made again there: the worker's parts are gone (`c` with them)
@@ -21131,15 +21145,17 @@ int main(int argc, char** argv) {
                     return 1;
                 } else if (remote_main) {   // the worker's part of the same checkpoint
                     bool missing = false;
-                    if (!remote_link.ckpt_restore(c->remote_id, resume, remote_keep(), missing, err)) {
+                    if (!remote_waiting([&](auto stop) {
+                            return remote_link.ckpt_restore(c->remote_id, resume, remote_keep(), missing, err, stop);
+                        })) {
                         // the link lost (the worker's end closed after the request's start looked): made again, as a
-                        // reset's is; the new connection holds no checkpoint part, so this is the missing case
-                        if (!missing && strata::net::stage_link_lost(err)) {
+                        // reset's is; the new connection holds no checkpoint part, so this is the missing case (a
+                        // STOP while waiting: remote_relink leaves it, and the request ends)
+                        if (!missing && (strata::net::stage_link_lost(err) || strata::net::stage_wait_cancelled(err))) {
                             if (!remote_relink(err)) {   // (its text starts with the link's: a 503 in the server)
-                                std::printf("ERR %s (restoring the conversation checkpoint at %lld tokens)\n",
-                                            err.c_str(), (long long) resume);
-                                std::fflush(stdout);
-                                if (remote_cancelled) continue;   // (a STOP: the link stays closed, the engine stays)
+                                if (remote_start_failed(err, " (restoring the conversation checkpoint at " +
+                                                                 std::to_string((long long) resume) + " tokens)"))
+                                    continue;
                                 return 1;
                             }
                             missing = true;
@@ -21163,9 +21179,7 @@ int main(int argc, char** argv) {
                                          err.c_str());
                         err.clear();
                         if (!session_from0(remote_roots({}))) {   // (the chain goes; the parked conversations stay)
-                            std::printf("ERR %s\n", err.c_str());
-                            std::fflush(stdout);
-                            if (remote_cancelled) continue;
+                            if (remote_start_failed(err, "")) continue;
                             return 1;
                         }
                         resume = 0;

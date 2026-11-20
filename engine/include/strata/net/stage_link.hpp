@@ -259,8 +259,10 @@ public:
                       size_t row_floats, int64_t skip, std::string& err);
     /// The oldest outstanding chunk's reply: rows [skip, T) into rows_out + skip rows.
     bool prefill_recv(float* rows_out, size_t row_floats, int64_t T, int64_t skip, std::string& err);
-    /// A fresh prompt: the worker zeroes its session and keeps only the checkpoint parts in `keep`.
-    bool reset(const std::vector<int64_t>& keep, std::string& err);
+    /// A fresh prompt: the worker zeroes its session and keeps only the checkpoint parts in `keep`.  `stop` (a
+    /// request's start: its STOP flag), set by another thread, ends the wait for the reply: "remote stage: the wait was
+    /// cancelled" (stage_wait_cancelled), and the link is marked failed.  The same for the two restores below.
+    bool reset(const std::vector<int64_t>& keep, std::string& err, const std::atomic<bool>* stop = nullptr);
     /// The positions of the next request's cells [0, cells): `table` is (t, h, w) per cell; nullptr: the identity
     /// (every cell its own index, as a text request has).  One way.
     bool positions(const int32_t* table, int64_t cells, std::string& err);
@@ -269,14 +271,16 @@ public:
     bool ckpt_save(int64_t id, int64_t L, const std::vector<int64_t>& keep, bool& stored, std::string& err);
     /// The worker puts checkpoint `id` (saved at L) back and keeps only `keep`; `missing` (with false): it does not
     /// hold `id` and nothing changed there.  Any other error: the worker's session is lost.
-    bool ckpt_restore(int64_t id, int64_t L, const std::vector<int64_t>& keep, bool& missing, std::string& err);
+    bool ckpt_restore(int64_t id, int64_t L, const std::vector<int64_t>& keep, bool& missing, std::string& err,
+                      const std::atomic<bool>* stop = nullptr);
     /// Parked conversations (a worker whose hello lists kStageCapPark): the worker drops what `keep` does not name,
     /// then keeps its layers' K/V of cells [0, L) and its running state at L under `id`; `stored` false: it could not
     /// (the prune happened).  An error: the worker's session is lost.
     bool park_save(int64_t id, int64_t L, const std::vector<int64_t>& keep, bool& stored, std::string& err);
     /// The worker puts park `id` (saved at L) back whole and keeps only `keep`; `missing` (with false): it does not
     /// hold `id`, or the park failed its check before anything was written.  Any other error: the session is lost.
-    bool park_restore(int64_t id, int64_t L, const std::vector<int64_t>& keep, bool& missing, std::string& err);
+    bool park_restore(int64_t id, int64_t L, const std::vector<int64_t>& keep, bool& missing, std::string& err,
+                      const std::atomic<bool>* stop = nullptr);
     /// Session files (a worker whose hello lists kStageCapSession): the worker writes its half of the session at L
     /// (and its checkpoint part `ckpt_id`, saved at Lc; 0: none) to its disk under `token`; `bytes`: what it wrote.
     /// An error from the worker leaves its session and stores as they were; `missing` (with false): the worker does
@@ -303,9 +307,11 @@ private:
     /// their conversion's time added to *conv_ms
     bool read_reply_(StageMsg want, void* reply, size_t reply_bytes, int64_t& worker_us, std::string& err,
                      size_t rows = 0, size_t width = 0, double* conv_ms = nullptr, StageRows f = StageRows::F32);
-    /// a synchronous message with a keep[] payload (Reset, CkptSave, CkptRestore); `reply_a`: the reply's `a`
+    /// a synchronous message with a keep[] payload (Reset, CkptSave, CkptRestore); `reply_a`: the reply's `a`;
+    /// `stop`: as for reset - the reply is waited for in slices that look at it, and one that comes after it has
+    /// nobody to read it, so the link is marked failed
     bool keep_call_(StageMsg type, StageMsg want, int64_t a, int64_t b, const std::vector<int64_t>& keep,
-                    int64_t& reply_a, std::string& err);
+                    int64_t& reply_a, std::string& err, const std::atomic<bool>* stop = nullptr);
     /// SessionPut / SessionGet: the token and Lc before keep[], and a reply that may take `wait_s`
     bool session_call_(StageMsg type, StageMsg want, int64_t a, int64_t b, const StageToken& token, int64_t Lc,
                        const std::vector<int64_t>& keep, int64_t& reply_a, std::string& err, int wait_s);

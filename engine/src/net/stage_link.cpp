@@ -1111,7 +1111,7 @@ bool StageClient::prefill_recv(float* rows_out, size_t row_floats, int64_t T, in
 }
 
 bool StageClient::keep_call_(StageMsg type, StageMsg want, int64_t a, int64_t b, const std::vector<int64_t>& keep,
-                             int64_t& reply_a, std::string& err) {
+                             int64_t& reply_a, std::string& err, const std::atomic<bool>* stop) {
     std::lock_guard<std::mutex> ls(send_mu_);
     std::lock_guard<std::mutex> lr(recv_mu_);
     if (!connected()) { err = "remote stage: not connected"; return false; }
@@ -1124,12 +1124,20 @@ bool StageClient::keep_call_(StageMsg type, StageMsg want, int64_t a, int64_t b,
     // a Reset is counted as before checkpoints (in `resets`, not in bytes_out); the checkpoint messages' bytes are
     if (type == StageMsg::Reset) ++stats_.resets;
     else stats_.bytes_out += sizeof h + h.bytes;
+    if (stop != nullptr && !tls_->buffered()) {
+        const strata::core::LinkCall call;
+        if (!wait_readable(S(fd_), Clock::now() + std::chrono::seconds(io_timeout_s()), stop, err)) {
+            if (!stage_wait_cancelled(err)) err = "remote stage: receive failed: timed out";
+            break_();
+            return false;
+        }
+    }
     return read_reply_(want, nullptr, 0, reply_a, err);
 }
 
-bool StageClient::reset(const std::vector<int64_t>& keep, std::string& err) {
+bool StageClient::reset(const std::vector<int64_t>& keep, std::string& err, const std::atomic<bool>* stop) {
     int64_t a = 0;
-    return keep_call_(StageMsg::Reset, StageMsg::ResetOk, 0, 0, keep, a, err);
+    return keep_call_(StageMsg::Reset, StageMsg::ResetOk, 0, 0, keep, a, err, stop);
 }
 
 bool StageClient::ckpt_save(int64_t id, int64_t L, const std::vector<int64_t>& keep, bool& stored, std::string& err) {
@@ -1141,10 +1149,10 @@ bool StageClient::ckpt_save(int64_t id, int64_t L, const std::vector<int64_t>& k
 }
 
 bool StageClient::ckpt_restore(int64_t id, int64_t L, const std::vector<int64_t>& keep, bool& missing,
-                               std::string& err) {
+                               std::string& err, const std::atomic<bool>* stop) {
     int64_t a = 0;
     missing = false;
-    if (keep_call_(StageMsg::CkptRestore, StageMsg::CkptRestoreOk, id, L, keep, a, err)) return true;
+    if (keep_call_(StageMsg::CkptRestore, StageMsg::CkptRestoreOk, id, L, keep, a, err, stop)) return true;
     // the worker's own text (read_reply_'s prefix, then the fixed start) - a relay's forwarded error is not this
     missing = connected() && err.rfind(std::string("remote stage (worker): ") + kStageCkptMissing, 0) == 0;
     return false;
@@ -1159,10 +1167,10 @@ bool StageClient::park_save(int64_t id, int64_t L, const std::vector<int64_t>& k
 }
 
 bool StageClient::park_restore(int64_t id, int64_t L, const std::vector<int64_t>& keep, bool& missing,
-                               std::string& err) {
+                               std::string& err, const std::atomic<bool>* stop) {
     int64_t a = 0;
     missing = false;
-    if (keep_call_(StageMsg::ParkRestore, StageMsg::ParkRestoreOk, id, L, keep, a, err)) return true;
+    if (keep_call_(StageMsg::ParkRestore, StageMsg::ParkRestoreOk, id, L, keep, a, err, stop)) return true;
     // the worker's own text, as for a checkpoint (ckpt_restore)
     missing = connected() && err.rfind(std::string("remote stage (worker): ") + kStageCkptMissing, 0) == 0;
     return false;

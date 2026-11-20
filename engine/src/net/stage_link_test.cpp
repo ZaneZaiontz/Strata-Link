@@ -82,6 +82,9 @@
 //      failure is not and no position is trusted after it; a failed Positions or Commit comes back on both; a
 //      reply allowed longer than STRATA_REMOTE_TIMEOUT_S is read as any other; a worker without the handlers lists
 //      no bit, answers both with an error that is not the missing-id one and reads at most 64 ids.
+//  21. a reset or restore with a stop flag (a request's start): a worker that never answers is waited for until the
+//      flag is set, which ends the wait as cancelled (not a lost link) and marks the link failed; a worker that
+//      answers is served as without the flag.
 // The handlers run on the worker's serving thread: what they share with the test is behind a mutex or atomic.
 #include "strata/core/progress.hpp"
 #include "strata/kernels/bf16_bits.hpp"
@@ -2782,6 +2785,46 @@ int main(int argc, char** argv) {
               "a worker without new_main (a relay, or 0.1.62 and earlier) does not list the bit");
         rc.close();
         wko.stop();
+    }
+
+    // 21. a request's reset or restore with a stop flag (the main process's request start): a worker that never
+    // answers is waited for until the flag is set, then the wait was cancelled and the link is marked failed
+    {
+        std::atomic<bool> answer{false};
+        StageHandlers hq = h;
+        hq.reset = [&](const std::vector<int64_t>&, std::string&) {
+            for (int i = 0; i < 500 && !answer.load(); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            return true;
+        };
+        Worker wkq;
+        if (!wkq.start(hq, buf)) {
+            std::printf("stage_link_test: no loopback port to listen on\n");
+            return 1;
+        }
+        Client qc;
+        std::atomic<bool> stop_q{false};
+        std::thread stopper([&] {
+            std::this_thread::sleep_for(std::chrono::milliseconds(300));
+            stop_q = true;
+        });
+        err.clear();
+        const bool greeted = greet_with(qc, wkq.where, hello_of());
+        const auto t0 = SteadyClock::now();
+        const bool reset_ok = greeted && qc.reset({}, err, &stop_q);
+        const double q_ms = ms_between(t0, SteadyClock::now());
+        stopper.join();
+        check(greeted && !reset_ok && q_ms < 1500 && stage_wait_cancelled(err) && !stage_link_lost(err) &&
+                  !qc.alive(err) && stage_link_lost(err),
+              "a reset the worker does not answer: a stop flag set 0.3 s in ends the wait, the link marked failed");
+        answer = true;
+        qc.close();
+        std::atomic<bool> never{false};
+        bool lost = false;
+        check(greet_with(qc, wkq.where, hello_of()) && qc.reset({}, err, &never) &&
+                  !qc.ckpt_restore(987654, 0, {}, lost, err, &never) && lost && qc.reset({}, err),
+              "... a worker that answers: served as without the flag (a restore's missing id still missing)");
+        qc.close();
+        wkq.stop();
     }
     std::error_code rm;
     std::filesystem::remove_all(g_tmp, rm);
