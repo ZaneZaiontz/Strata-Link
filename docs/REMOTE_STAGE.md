@@ -293,6 +293,7 @@ main process without it.
 | `STRATA_STAGE_TLS=DIR` | every PC | this PC's key folder: `key.pem`, `cert.pem` and `peers/` (`*.pem`, `*.crt`). Required: without it a remote stage does not start. Read at start; restart a stage after changing `peers/` |
 | `strata --stage-keygen DIR [NAME]` | every PC | make DIR's key and certificate (Ed25519, NAME or the PC's host name) and an empty `peers/`, and make DIR this user's alone (mode 0700; on Windows only this user, SYSTEM and Administrators). DIR must be new or empty, this user's own (another user's folder is refused; on Windows one the Administrators own is accepted too), not held open by a process that may move it, and not a link or, on Windows, a junction (a folder holding other files is refused, its permissions left as they were; what a keygen left once its `key.pem` was removed, a `cert.pem` and an empty `peers/`, is not in the way: both are made again), and it never overwrites a key |
 | `STRATA_STAGE_TOKEN` | | no longer used (it was the shared secret before TLS): a stage that finds it says so and goes on |
+| `STRATA_REMOTE_ROWS=fp32\|bf16` | main | the format of the rows on the link: the verify windows' (both ways), the prompt rows going to the worker, and the prompt rows coming back, which only the drafter reads. It sets all three; `STRATA_REMOTE_ROWS_WINDOW`, `STRATA_REMOTE_ROWS_PROMPT` and `STRATA_REMOTE_ROWS_DRAFT` set one each. Default: fp32, except the rows coming back, bf16 (half the bytes; the answers change no more than between two runs). bf16 on the other two changes answers a little and helps on a slow link. A worker takes what its main process asks for; one of 0.1.62 or earlier gets fp32 on every stream unless all three ask for bf16 ([ENGINEERING.md](remote-stage/ENGINEERING.md#row-formats-per-stream-2026-11-20)) |
 | `STRATA_REMOTE_TIMING=1` | any | per-stage timing lines: each prompt chunk, and every 64 windows (see below) |
 | `STRATA_ADAPT_OVERLAP=1` | any | let the adaptive tier's copies land while the next window runs (opt-in on every PC since 0.1.43.1). On a worker it was not measured faster ([ENGINEERING.md](remote-stage/ENGINEERING.md#after-the-rebase-onto-0143-2026-10-12)) |
 | `STRATA_REMOTE_TIMEOUT_S` | any | seconds a send or receive may block before the link counts as dead (default 300). After the hello, a worker waits for the next message without a limit. The engine's watchdog does not count a send or receive under way, so this is also how long a link that moves nothing can hold a request (see below) |
@@ -334,7 +335,8 @@ again. Measured through a shaping proxy (15 ms each way, 20 Mbit/s, fp32 rows, d
 prompt read in 119 s and an 8,478-token one in 190 s, with no watchdog stop; the link cut to 0.001 Mbit/s 30 s into
 the 8,478-token prompt ended that request 293 s later with `remote stage: send failed: Broken pipe` and a 503, and
 the next request was answered 39 s after (the main engine started again). Without the 10 s lines the server had
-ended the silent engine 152 s into the same stall, as frozen.
+ended the silent engine 152 s into the same stall, as frozen. With the rows coming back in bf16 (the default since)
+the same 4,179-token prompt read in 85 s, and with `STRATA_REMOTE_ROWS=bf16` in 61 s.
 
 A worker stuck in a message it serves (a window, a prompt chunk, a
 commit, a reset, a position table, a checkpoint save or restore) for `STRATA_WATCHDOG_S` (60 s) ends with a stall

@@ -74,13 +74,26 @@ the hello the worker waits for messages without a time limit (the next prompt ma
 main process's receives time out after `STRATA_REMOTE_TIMEOUT_S` (300 s). Sockets: `TCP_NODELAY`, 8 MiB buffers,
 keepalive after 30 s idle, 3 probes 10 s apart.
 
-**Row formats.** The rows (both ways, windows and prompt chunks) are fp32 unless the main process asks for another
-format: `STRATA_REMOTE_ROWS=bf16` halves their bytes and rounds each value to 8 significant bits (to nearest even, as
-the GPU kernels round to bf16). It is opt-in because it changes answers a little ([measured](#row-formats-bf16-2026-10-13)); the default stays
-fp32, and every message after the hello is byte for byte what protocol 6 sent. Each hello lists the formats its side sends and reads
-(`row_formats`, a bit per format): a main process lists fp32 and the one it asks for, a worker every one it has, and
-the link uses the narrowest both list (fp32 when no other). A relay asks its next worker for what its main process
-listed. A format added later is a new bit, not a new protocol: a side that lacks it does not list it. The engine's
+**Row formats.** The rows cross in three streams, each in a format of its own: the verify windows' (both ways), the
+prompt chunks' going to the worker, and the prompt chunks' coming back. The last exist only for the drafter: they
+come back only with one, only from its window on (`Prefill::set_remote_rows_from`), and the main process reads them
+only to build the drafter's K/V for the prompt; the first token comes from a verify window. bf16 halves a stream's
+bytes and rounds each value to 8 significant bits (to nearest even, as the GPU kernels round to bf16). On the
+windows and the prompt rows going out it is opt-in, because it changes answers a little
+([measured](#row-formats-bf16-2026-10-13)); those two stay fp32 by default. The rows coming back are bf16 by default:
+they can change what the drafter proposes, not which tokens the target keeps, and a run with them in bf16 differed from
+an fp32 one no more than two fp32 runs differ from each other ([measured](#row-formats-per-stream-2026-11-20)).
+`STRATA_REMOTE_ROWS=fp32|bf16` sets all three streams; `STRATA_REMOTE_ROWS_WINDOW`, `STRATA_REMOTE_ROWS_PROMPT` and
+`STRATA_REMOTE_ROWS_DRAFT` set one each and win over it. With every stream in fp32, every message after the hello is
+byte for byte what protocol 6 sent. Each hello lists the formats its side sends and reads (`row_formats`, a bit per
+format): a main process lists fp32 and the formats all three of its streams ask for, a worker every one it has, and
+the link uses the narrowest both list (fp32 when no other). Bit 28 (`kStageCapStreamRows`) adds a list per stream:
+the hello's `stream_rows`, 16 bits a stream in the same bits, taken from the old token's unused bytes. When both
+hellos have the bit, each stream uses the narrowest format both list for it; when either lacks it, every stream uses
+the one format of `row_formats`. So a worker of 0.1.62 or earlier gets fp32 on every stream unless all three ask for the
+same other format (`STRATA_REMOTE_ROWS=bf16` works as it did), and a main process of 0.1.62 or earlier gets the one format
+it asked for. A relay asks its next worker for what its main process listed, per stream too. A format added later is a
+new bit, not a new protocol: a side that lacks it does not list it. The engine's
 buffers stay fp32 on both PCs; the link converts as it sends and reads, on the threads that already move the rows (a
 prompt chunk's: the main process's sending thread and its receiving one, the worker's receiving thread and its reply
 thread; a window's few rows: the calling thread). With `STRATA_REMOTE_TIMING=1` each chunk's line adds the main
@@ -1402,6 +1415,37 @@ the change that converted whole buffers value by value; the instruction sets giv
 by 1.1e-3 (median 6.0e-4, largest 5.4e-3); the top token is the same for 40 of 40 in both, the top 10 keep 9.93 and
 9.62 of their tokens; the whole answer is the same for 35 of 40 (fp32 again) and 24 of 40 (bf16). So it stays opt-in, for a
 link that is the bottleneck.
+
+### Row formats per stream (2026-11-20)
+
+The v31 model split at K=30, the main process on an RTX 3080 (layers 0-29, head, drafter), the worker on an RTX 5070,
+1 GbE, `--prefill 2944`, `--spec 4 --mtp`, the server's default settings otherwise. Eight greedy prompts per run (six
+short ones with a 300-token answer, a 12,173-token and a 4,014-token one), every run on a freshly started main
+process, three runs with the rows coming back in fp32 and three in bf16 (the windows and the prompt rows going out
+fp32 in all):
+
+| rows back | drafts kept, three runs | decode, short prompts | 12K / 4K prompt read |
+|---|---|---|---|
+| fp32 | 77.6%, 76.4%, 78.5% | 73.2-73.6 tok/s | 1,577 / 930-935 tok/s |
+| bf16 | 77.6%, 75.6%, 77.7% | 73.4-74.2 tok/s | 1,684-1,701 / 1,112-1,113 tok/s |
+
+The engine does not give the same answer twice here, even with every setting the same: two fp32 runs had 1-2 of the 8
+answers identical, and the answers agreed on 25-36% of their text before the first difference. An fp32 run against a
+bf16 one: 1-3 of 8 identical, 21-45% agreed (two bf16 runs: 1-2, 19-43%). So the rows coming back in bf16 change the
+answers no more than running again does, and they keep as many drafts. They take a prompt's reply off the link
+sooner, which shows even on 1 GbE (8% faster at 12K, 19% at 4K).
+
+Through the shaping proxy (15 ms each way, 20 Mbit/s each way, `bench/wan_check.py`, the 4,179-token prompt):
+
+| rows (windows / prompt out / back) | decode, story / code | 4.2K prompt read |
+|---|---|---|
+| fp32 / fp32 / fp32 (the default before) | 11.0 / 14.8 tok/s | 35 tok/s (119.4 s) |
+| fp32 / fp32 / bf16 (the default now) | 11.1 / 14.6 tok/s | 49 tok/s (84.8 s) |
+| bf16 / bf16 / bf16 (`STRATA_REMOTE_ROWS=bf16`) | 17.0 / 22.2 tok/s | 69 tok/s (60.5 s) |
+
+Mixed builds on 1 GbE: this main process with a 0.1.62 worker links with fp32 on every stream by default and bf16 on
+every stream with `STRATA_REMOTE_ROWS=bf16`; a 0.1.62 main process with this worker links with fp32 on every stream.
+All three answered the picture check.
 
 ## Lessons
 
