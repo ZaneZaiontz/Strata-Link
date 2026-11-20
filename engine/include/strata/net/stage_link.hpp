@@ -116,7 +116,10 @@ struct StageHello {
     char build[48] = {};          ///< engine build id (informational)
     /// with kStageCapStreamRows: the row formats per stream, 16 bits each (bits 16 * StageStream), as row_formats
     uint64_t stream_rows = 0;
-    char unused[56] = {};         ///< (protocol 7's token: the TLS handshake proves both ends now)
+    /// with kStageCapResume: a main process's number for itself, drawn once at its start (never 0); a worker's hello
+    /// carries the main process's own back when it kept that process's checkpoint parts (stage_resumes), else 0
+    uint64_t instance = 0;
+    char unused[48] = {};         ///< (protocol 7's token: the TLS handshake proves both ends now)
 };
 #pragma pack(pop)
 // one size across protocols: an older peer's hello is read whole and refused for its protocol, not as malformed
@@ -170,6 +173,13 @@ inline constexpr uint32_t kStageCapSession = 1u << 29;
 /// Bit 28 (kStageCapStreamRows): stream_rows holds this side's row formats per stream (stage_rows_for).  A worker lists
 /// it with every format in every stream; an older peer ignores it and its hello's stream_rows.
 inline constexpr uint32_t kStageCapStreamRows = 1u << 28;
+/// Bit 27 (kStageCapResume): the hello's `instance` means something.  A main process lists it with its number; a worker
+/// lists it when it keeps a main process's checkpoint parts across that process's reconnect (StageHandlers::new_main)
+/// and answers with the number when the hello is the one it served last.  An older peer ignores the bit and `instance`.
+inline constexpr uint32_t kStageCapResume = 1u << 27;
+/// After a reconnect: whether the worker whose hello is `worker` still holds the checkpoint parts the main process with
+/// hello `main` saved on its earlier connection (both list kStageCapResume and the worker echoed the main's number).
+bool stage_resumes(const StageHello& main, const StageHello& worker);
 /// The 128-bit token of a session file's worker half (SessionPut / SessionGet): all zeros is no token.
 using StageToken = std::array<uint64_t, 2>;
 /// the row_formats bits for a K/V element type as --kv names it (fp16, int8, q4_0, k8v4); 0 for another name
@@ -382,6 +392,11 @@ struct StageHandlers {
     std::function<bool(int64_t ckpt_id, int64_t L, const StageToken& token, int64_t Lc,
                        const std::vector<int64_t>& keep, std::string& err)> session_get;
     std::function<void()> disconnected;   ///< the main process went away (the session is stale)
+    /// optional: at a hello that is not the last served main process's own again (kStageCapResume and its `instance`),
+    /// before it is answered - what belonged to the earlier main process (its checkpoint parts) goes.  Set, the worker
+    /// lists kStageCapResume and keeps those parts across a reconnect of the same main process; unset (a relay), the
+    /// worker does not list it and `disconnected` drops them as before.
+    std::function<void()> new_main;
     /// optional (a relay worker): about once a second while the served main process is idle (no message read or being
     /// read, no reply going out), on the serving thread.  False ends that connection with `err`, as a closed one ends:
     /// its main process finds the link lost at its next request and connects again.

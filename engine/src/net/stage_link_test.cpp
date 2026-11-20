@@ -2722,6 +2722,67 @@ int main(int argc, char** argv) {
         sc.close();
         wkn.stop();
     }
+    // 20. a main process that connects again (kStageCapResume): a worker with new_main keeps its checkpoint parts for
+    // the same main process and drops them for any other
+    {
+        std::atomic<int> new_mains{0};
+        StageHandlers hr = h;
+        hr.new_main = [&] {
+            std::lock_guard<std::mutex> lk(w.mu);
+            w.store.clear();
+            ++new_mains;
+        };
+        hr.disconnected = [] {};
+        Worker wkr;
+        if (!wkr.start(hr, buf)) {
+            std::printf("stage_link_test: no loopback port to listen on\n");
+            return 1;
+        }
+        StageHello a = hello_of(), b = hello_of(), older = hello_of();
+        a.row_formats |= kStageCapResume;
+        a.instance = 11;
+        b.row_formats |= kStageCapResume;
+        b.instance = 22;
+        Client rc;
+        StageHello rp;
+        auto join = [&](const std::string& at, const StageHello& m) {
+            err.clear();
+            rc.close();
+            return rc.connect(at, m, rp, err);
+        };
+        bool kept = false, lost = false;
+        check(join(wkr.where, a) && (rp.row_formats & kStageCapResume) != 0 && rp.instance == 0 &&
+                  !stage_resumes(a, rp) && new_mains.load() == 1,
+              "a first main process: the worker lists the bit, keeps nothing for it and echoes no number");
+        check(rc.ckpt_save(5, 0, {5}, kept, err) && kept && w.size() == 1, "... it saves a checkpoint there");
+        check(join(wkr.where, a) && rp.instance == 11 && stage_resumes(a, rp) && new_mains.load() == 1 &&
+                  rc.ckpt_restore(5, 0, {5}, lost, err),
+              "the same main process again: its number echoed, its checkpoint restored on the new connection");
+        check(join(wkr.where, b) && rp.instance == 0 && !stage_resumes(b, rp) && new_mains.load() == 2 &&
+                  !rc.ckpt_restore(5, 0, {5}, lost, err) && lost,
+              "another main process: the parts dropped at its hello, the old id missing");
+        check(rc.ckpt_save(6, 0, {6}, kept, err) && kept && join(wkr.where, a) && !stage_resumes(a, rp) &&
+                  new_mains.load() == 3 && !rc.ckpt_restore(6, 0, {6}, lost, err) && lost,
+              "the first one back after the other: dropped again");
+        check(rc.ckpt_save(7, 0, {7}, kept, err) && kept && join(wkr.where, older) && !stage_resumes(older, rp) &&
+                  new_mains.load() == 4 && !rc.ckpt_restore(7, 0, {7}, lost, err) && lost,
+              "a main process without the bit (0.1.62 or earlier): dropped, as before");
+        StageHello zero = a;
+        zero.instance = 0;
+        check(join(wkr.where, zero) && join(wkr.where, zero) && !stage_resumes(zero, rp) && new_mains.load() == 6,
+              "a number of 0 is never the same main process");
+        rc.close();
+        wkr.stop();
+        Worker wko;
+        if (!wko.start(h, buf)) {
+            std::printf("stage_link_test: no loopback port to listen on\n");
+            return 1;
+        }
+        check(join(wko.where, a) && (rp.row_formats & kStageCapResume) == 0 && !stage_resumes(a, rp),
+              "a worker without new_main (a relay, or 0.1.62 and earlier) does not list the bit");
+        rc.close();
+        wko.stop();
+    }
     std::error_code rm;
     std::filesystem::remove_all(g_tmp, rm);
     if (g_fail == 0) std::printf("stage_link_test: all passed\n");

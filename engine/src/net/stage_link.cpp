@@ -747,6 +747,11 @@ bool stage_link_lost(const std::string& err) {
 
 bool stage_wait_cancelled(const std::string& err) { return err == kCancelled; }
 
+bool stage_resumes(const StageHello& main, const StageHello& worker) {
+    return (main.row_formats & worker.row_formats & kStageCapResume) != 0 && main.instance != 0 &&
+           worker.instance == main.instance;
+}
+
 // ------------------------------------------------------------------------------------------------ StageClient
 
 StageClient::~StageClient() { close(); }
@@ -1439,6 +1444,7 @@ int serve_stage(const std::string& bind_addr, int port, std::shared_ptr<TlsCrede
     std::unique_ptr<Peer> next_peer;
     std::string next_host;
     Inbox first;
+    uint64_t last_main = 0;
     while (stop == nullptr || !*stop) {
         std::unique_ptr<Peer> served = std::move(next_peer);
         std::string host = next_host;
@@ -1838,6 +1844,17 @@ int serve_stage(const std::string& bind_addr, int port, std::shared_ptr<TlsCrede
                     (void) reply_error(r);
                     keep = false;
                     break;
+                }
+                if (h.new_main) {
+                    const uint64_t main_id = (in.hello.row_formats & kStageCapResume) != 0 ? in.hello.instance : 0;
+                    const bool same = main_id != 0 && main_id == last_main;
+                    if (!same) h.new_main();
+                    last_main = main_id;
+                    mine.row_formats |= kStageCapResume;
+                    mine.instance = same ? main_id : 0;
+                    if (same)
+                        std::fprintf(stderr, "strata stage worker: %s is the main process served before: its "
+                                     "checkpoint parts are kept\n", host.c_str());
                 }
                 mine.row_formats |= kStageRowsAll | kStageCapStreamRows;   // (the conversions are this link's own)
                 mine.stream_rows = (uint64_t) kStageRowsAll * (1u | 1ull << 16 | 1ull << 32);
