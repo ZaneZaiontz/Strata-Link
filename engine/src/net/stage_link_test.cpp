@@ -52,7 +52,9 @@
 //      link uses the narrowest format both hellos list (fp32 when no other); a main process listing bf16 gets a
 //      window's and a chunk's rows back rounded to bf16, in half the bytes, one listing fp32 only gets them exact; the
 //      worker's sizes follow the agreed format (an fp32-sized window or chunk on a bf16 link is malformed), and a
-//      second hello on a connection agrees again; a chunk larger than one conversion slice comes back whole;
+//      second hello on a connection agrees again; a chunk larger than one conversion slice comes back whole; each
+//      stream (windows, prompt rows out, prompt rows back) gets its own format when both hellos list
+//      kStageCapStreamRows, and a peer without it gets one format for all (fp32 unless every stream asks for another);
 //  16. the K/V element type (row_formats' kStageCapKvElem);
 //  17. TLS: the credentials (no folder, no key, a key and another PC's certificate, a peers/ .pem without a
 //      certificate - another file there is not read -, a key not overwritten by --stage-keygen, whose folder is this
@@ -81,6 +83,7 @@
 //      reply allowed longer than STRATA_REMOTE_TIMEOUT_S is read as any other; a worker without the handlers lists
 //      no bit, answers both with an error that is not the missing-id one and reads at most 64 ids.
 // The handlers run on the worker's serving thread: what they share with the test is behind a mutex or atomic.
+#include "strata/core/progress.hpp"
 #include "strata/kernels/bf16_bits.hpp"
 #include "strata/net/stage_ckpt_store.hpp"
 #include "strata/net/stage_link.hpp"
@@ -1310,6 +1313,29 @@ int main(int argc, char** argv) {
     a.close();
     wk6.stop();
 
+    Worker wk6w;
+    if (!wk6w.start(slow, buf)) {
+        std::printf("stage_link_test: no loopback port to listen on\n");
+        return 1;
+    }
+    check(greet_with(a, wk6w.where, hello_of()) && a.reset({}, err), "a main for the link's watchdog allowance");
+    std::atomic<bool> waiting{false}, bounded{false};
+    std::thread probe([&] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(700));
+        const int64_t now = strata::core::progress_now_ms();
+        waiting = strata::core::progress_link_waiting(now, 2);
+        bounded = !strata::core::progress_link_waiting(now + 2000, 2);
+    });
+    const bool w_ok = a.prefill_send(ptok, 2, 0, 0, pin, kD, 0, err) && a.prefill_recv(pout, kD, 2, 0, err);
+    probe.join();
+    for (int i = 0; i < 100 && strata::core::progress_link_waiting(strata::core::progress_now_ms(), 2); ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    check(w_ok && waiting.load() && bounded.load() &&
+              !strata::core::progress_link_waiting(strata::core::progress_now_ms(), 2),
+          "a read waiting 1.5 s for a reply is the link's wait, not past its limit, and none once the reply is in");
+    a.close();
+    wk6w.stop();
+
     // 10. alive(): the link between requests, checked with nothing sent and without blocking
     Worker wk7;
     if (!wk7.start(h, buf)) {
@@ -1678,6 +1704,34 @@ int main(int argc, char** argv) {
         check(stage_rows_parse("bf16", parsed) && parsed == StageRows::BF16 && stage_rows_parse("fp32", parsed) &&
                   parsed == StageRows::F32 && !stage_rows_parse("fp8", parsed),
               "STRATA_REMOTE_ROWS names: fp32, bf16");
+        auto streams = [](const StageHello& a, const StageHello& b, StageRows w, StageRows p, StageRows d) {
+            bool ok = true;
+            const StageRows want[3] = {w, p, d};
+            for (const StageStream s : {StageStream::Window, StageStream::Prompt, StageStream::Draft})
+                ok = ok && stage_rows_for(a, b, s) == want[(size_t) s] && stage_rows_for(b, a, s) == want[(size_t) s];
+            return ok;
+        };
+        StageHello new_worker = hello_of(), old_worker = hello_of(), old_main = hello_of();
+        new_worker.row_formats = kStageRowsAll | kStageCapStreamRows;
+        new_worker.stream_rows = (uint64_t) kStageRowsAll * (1u | 1ull << 16 | 1ull << 32);
+        old_worker.row_formats = kStageRowsAll;
+        StageHello by_default = hello_of(), all_b16 = hello_of(), mixed = hello_of();
+        stage_rows_ask(by_default, StageRows::F32, StageRows::F32, StageRows::BF16);
+        stage_rows_ask(all_b16, StageRows::BF16, StageRows::BF16, StageRows::BF16);
+        stage_rows_ask(mixed, StageRows::BF16, StageRows::F32, StageRows::BF16);
+        check(streams(by_default, new_worker, StageRows::F32, StageRows::F32, StageRows::BF16) &&
+                  streams(mixed, new_worker, StageRows::BF16, StageRows::F32, StageRows::BF16) &&
+                  streams(all_b16, new_worker, StageRows::BF16, StageRows::BF16, StageRows::BF16),
+              "a format per stream: each as the main process asks when the worker lists them all");
+        check(streams(by_default, old_worker, StageRows::F32, StageRows::F32, StageRows::F32) &&
+                  streams(mixed, old_worker, StageRows::F32, StageRows::F32, StageRows::F32) &&
+                  streams(all_b16, old_worker, StageRows::BF16, StageRows::BF16, StageRows::BF16),
+              "a worker that knows one format for all: fp32 unless every stream asks for the same other");
+        old_main.row_formats = f32 | b16;
+        const bool old_b16 = streams(old_main, new_worker, StageRows::BF16, StageRows::BF16, StageRows::BF16);
+        old_main.row_formats = f32;
+        check(old_b16 && streams(old_main, new_worker, StageRows::F32, StageRows::F32, StageRows::F32),
+              "a main process that knows one format for all: that one on every stream");
 
         worker_vision = 1;
         Worker wk15;
@@ -1687,8 +1741,10 @@ int main(int argc, char** argv) {
             Client cl;
             StageHello mine_b = hello_of();
             mine_b.row_formats = f32 | b16;
-            check(cl.connect(wk15.where, mine_b, peer, err) && cl.rows() == StageRows::BF16 &&
-                      peer.row_formats == kStageRowsAll,
+            check(cl.connect(wk15.where, mine_b, peer, err) && cl.rows(StageStream::Window) == StageRows::BF16 &&
+                      cl.rows(StageStream::Prompt) == StageRows::BF16 &&
+                      cl.rows(StageStream::Draft) == StageRows::BF16 &&
+                      peer.row_formats == (kStageRowsAll | kStageCapStreamRows),
                   "a main process listing bf16: the link agrees on it (the worker lists every format)");
             // values bf16 rounds; the worker's handlers copy rows in to out, so each comes back rounded once
             std::vector<float> win15((size_t) (2 * kHbf)), wout15(win15.size()), want(win15.size());
@@ -1715,11 +1771,38 @@ int main(int argc, char** argv) {
                       cl.prefill_recv(pout15.data(), (size_t) kD, kChunk, skip, err) && pout15 == pwant15,
                   "a prompt chunk's rows too, from row `skip` (the rows before it untouched)");
             cl.close();
-            check(cl.connect(wk15.where, hello_of(), peer, err) && cl.rows() == StageRows::F32 &&
+            check(cl.connect(wk15.where, hello_of(), peer, err) && cl.rows(StageStream::Window) == StageRows::F32 &&
                       cl.run(2, t2.data(), 0, win15.data(), win15.size(), wout15.data(), wout15.size(), err) &&
                       wout15 == win15,
                   "a main process listing fp32 only: fp32, the rows exact");
             cl.close();
+            std::vector<float> pin_b16(pin15.size(), -1.0f), pin_f32(pin15.size(), -1.0f);
+            for (size_t i = (size_t) (skip * kD); i < pin15.size(); ++i) {
+                pin_b16[i] = f32_from_bf16(bf16_from_f32(pin15[i]));
+                pin_f32[i] = pin15[i];
+            }
+            auto per_stream = [&](StageRows w, StageRows p, StageRows d) {
+                StageHello m = hello_of();
+                stage_rows_ask(m, w, p, d);
+                std::fill(pout15.begin(), pout15.end(), -1.0f);
+                bool ok = cl.connect(wk15.where, m, peer, err) && cl.rows(StageStream::Window) == w &&
+                          cl.rows(StageStream::Prompt) == p && cl.rows(StageStream::Draft) == d && cl.reset({}, err) &&
+                          cl.run(2, t2.data(), 0, win15.data(), win15.size(), wout15.data(), wout15.size(), err) &&
+                          wout15 == (w == StageRows::BF16 ? want : win15);
+                const uint64_t out0 = cl.stats().bytes_out, in0 = cl.stats().bytes_in;
+                ok = ok && cl.prefill_send(ptok15.data(), kChunk, 0, 0, pin15.data(), (size_t) kD, skip, err) &&
+                     cl.prefill_recv(pout15.data(), (size_t) kD, kChunk, skip, err) &&
+                     pout15 == (p == StageRows::BF16 || d == StageRows::BF16 ? pin_b16 : pin_f32) &&
+                     cl.stats().bytes_out - out0 ==
+                         sizeof(StageHeader) + stage_rows_bytes(p, kChunk, kD) + kChunk * 8 &&
+                     cl.stats().bytes_in - in0 == sizeof(StageHeader) + stage_rows_bytes(d, kChunk - skip, kD);
+                cl.close();
+                return ok;
+            };
+            check(per_stream(StageRows::F32, StageRows::F32, StageRows::BF16) &&
+                      per_stream(StageRows::F32, StageRows::BF16, StageRows::F32) &&
+                      per_stream(StageRows::BF16, StageRows::F32, StageRows::F32),
+                  "each stream in its own format: the window's rows, the chunk's out and back, each in its own bytes");
             {
                 Raw r;
                 StageHello rh = hello_of();
@@ -1809,7 +1892,7 @@ int main(int argc, char** argv) {
                 bin[i] = (float) (i % 1009) * 1.0009f - 500.0f;
                 if (i >= (size_t) (skip * kBigD)) bwant[i] = f32_from_bf16(bf16_from_f32(bin[i]));
             }
-            check(cl.connect(wkb.where, mine_b, peer, err) && cl.rows() == StageRows::BF16 &&
+            check(cl.connect(wkb.where, mine_b, peer, err) && cl.rows(StageStream::Prompt) == StageRows::BF16 &&
                       cl.prefill_send(btok.data(), kBigT, 0, 0, bin.data(), (size_t) kBigD, skip, err) &&
                       cl.prefill_recv(bout.data(), (size_t) kBigD, kBigT, skip, err) && bout == bwant,
                   "a chunk of more than one conversion slice (a part slice last) comes back whole, rounded to bf16");
@@ -1842,7 +1925,7 @@ int main(int argc, char** argv) {
             };
             worker_kv_bits = int8;
             worker_kv_type = 1;
-            check(greet16(int8, 0) && (peer.row_formats & ~kStageRowsAll) == int8,
+            check(greet16(int8, 0) && (peer.row_formats & ~(kStageRowsAll | kStageCapStreamRows)) == int8,
                   "both carry int8: served, the K/V placement (kv_type) not compared, the worker's bits in its reply");
             check(!greet16(fp16, 1) && contains(err, "the worker refused:") && contains(err, "differ") &&
                       contains(err, "--kv fp16/int8"),

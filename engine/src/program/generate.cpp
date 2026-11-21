@@ -16011,7 +16011,7 @@ int main(int argc, char** argv) {
             const char* wio = std::getenv("STRATA_WATCHDOG_IO_S");
             const int io_limit = wio ? std::atoi(wio) : limit * 10;
             if (limit > 0)
-                std::thread([limit, io_limit] {
+                std::thread([limit, io_limit, remote_main] {
                     strata::platform::name_this_thread("strata-watchdog");
                     strata::aux_cpus::pin_current_thread();
                     strata::core::Progress& p = strata::core::progress();
@@ -16021,15 +16021,26 @@ int main(int argc, char** argv) {
                     uint64_t io_last = file_tier_activity();
                     auto io_active_at = since;   // the last second the file tier was busy
                     bool io_noted = false;
+                    bool link_noted = false;
+                    auto said_at = since;
                     for (;;) {
                         std::this_thread::sleep_for(std::chrono::seconds(1));
                         const auto now = std::chrono::steady_clock::now();
                         const uint64_t b = p.beats.load();
-                        if (!p.busy.load() || b != last) { last = b; ticks_at = p.ticks.load(); since = now; io_since = now; io_active_at = now; io_noted = false; io_last = file_tier_activity(); continue; }
+                        if (!p.busy.load() || b != last) { last = b; ticks_at = p.ticks.load(); since = now; io_since = now; io_active_at = now; io_noted = false; link_noted = false; io_last = file_tier_activity(); continue; }
                         {   // sampled every second, also during the first `limit` seconds, so a busy file tier is seen
                             const uint64_t a = file_tier_activity();
                             if (a >= io_last + 16) io_active_at = now;   // 16 = faults + MiB read in a second: busy
                             io_last = a;
+                        }
+                        const bool link_waiting = strata::core::progress_link_waiting(strata::core::progress_now_ms(),
+                                                                                      strata::net::io_timeout_s() + limit);
+                        if (remote_main && link_waiting && now - since >= std::chrono::seconds(10) &&
+                            now - said_at >= std::chrono::seconds(10)) {
+                            said_at = now;
+                            std::printf("INFO remote_stage_wait=%lld\n",
+                                        (long long) std::chrono::duration_cast<std::chrono::seconds>(now - since).count());
+                            std::fflush(stdout);
                         }
                         if (now - since < std::chrono::seconds(limit)) continue;
                         if (io_limit > limit && now - io_since < std::chrono::seconds(io_limit)) {
@@ -16047,6 +16058,16 @@ int main(int argc, char** argv) {
                         }
                         // a blocking step's explicit allowance (session files): still within it, not yet stuck
                         if (strata::core::progress_now_ms() < p.allow_until_ms.load()) continue;
+                        if (link_waiting) {
+                            if (!link_noted) {
+                                link_noted = true;
+                                std::fprintf(stderr, "strata serve: no step finished for %d s, but a read or write on the remote "
+                                                     "stage's link is under way (a slow link): waiting while it moves, each "
+                                                     "read or write up to STRATA_REMOTE_TIMEOUT_S (%d s)\n",
+                                             limit, strata::net::io_timeout_s());
+                            }
+                            continue;
+                        }
                         std::fprintf(stderr, "strata serve: no progress for %d s during a request (%s) - stopping "
                                              "the engine so the server starts it again (issue #29)%s\n",
                                      limit, stage_text().c_str(),
@@ -16460,24 +16481,41 @@ int main(int argc, char** argv) {
                                      "the row format its main process asks for (it ignores its own)\n");
             if (remote_main) {
                 // STRATA_REMOTE_ROWS=bf16: the rows cross the link as bf16 (half the bytes, each value rounded to 8
-                // significant bits) when the worker has it; unset or fp32: fp32, as before
-                if (const char* v = std::getenv("STRATA_REMOTE_ROWS"); v != nullptr && *v != '\0') {
-                    strata::net::StageRows f = strata::net::StageRows::F32;
-                    if (!strata::net::stage_rows_parse(v, f)) {
-                        std::fprintf(stderr, "strata serve: STRATA_REMOTE_ROWS=%s: expected fp32 or bf16\n", v);
-                        return 1;
+                // significant bits) when the worker has it.  It sets every stream; STRATA_REMOTE_ROWS_WINDOW, _PROMPT
+                // and _DRAFT set one each.  Unset: fp32, but bf16 for the prompt rows that come back, which only the
+                // drafter reads (its drafts may differ, the tokens kept do not)
+                using strata::net::StageRows;
+                bool rows_ok = true;
+                auto rows_env = [&rows_ok](const char* name, StageRows f) {
+                    const char* v = std::getenv(name);
+                    if (v == nullptr || *v == '\0') {
+                        name = "STRATA_REMOTE_ROWS";
+                        v = std::getenv(name);
                     }
-                    me.row_formats |= 1u << (uint32_t) f;
-                }
+                    if (v != nullptr && *v != '\0' && !strata::net::stage_rows_parse(v, f)) {
+                        std::fprintf(stderr, "strata serve: %s=%s: expected fp32 or bf16\n", name, v);
+                        rows_ok = false;
+                    }
+                    return f;
+                };
+                const StageRows window = rows_env("STRATA_REMOTE_ROWS_WINDOW", StageRows::F32);
+                const StageRows prompt = rows_env("STRATA_REMOTE_ROWS_PROMPT", StageRows::F32);
+                const StageRows draft = rows_env("STRATA_REMOTE_ROWS_DRAFT", StageRows::BF16);
+                if (!rows_ok) return 1;
+                strata::net::stage_rows_ask(me, window, prompt, draft);
                 remote_hello = me;
                 if (!remote_connect(err, false)) {
                     std::fprintf(stderr, "strata serve: %s\n", err.c_str());
                     return 1;
                 }
                 std::fprintf(stderr, "strata serve: remote stage %s: layers %d-%d there (prompt chunk %lld, context %lld, "
-                             "rows %s; %s)\n", o.remote_stage.c_str(), remote_peer.layer_begin, remote_peer.n_layers - 1,
-                             (long long) remote_peer.chunk, (long long) remote_peer.max_context,
-                             strata::net::stage_rows_name(remote_link.rows()), remote_link.tls_peer().c_str());
+                             "rows %s; prompt rows %s out, %s back; %s)\n", o.remote_stage.c_str(),
+                             remote_peer.layer_begin, remote_peer.n_layers - 1, (long long) remote_peer.chunk,
+                             (long long) remote_peer.max_context,
+                             strata::net::stage_rows_name(remote_link.rows(strata::net::StageStream::Window)),
+                             strata::net::stage_rows_name(remote_link.rows(strata::net::StageStream::Prompt)),
+                             strata::net::stage_rows_name(remote_link.rows(strata::net::StageStream::Draft)),
+                             remote_link.tls_peer().c_str());
                 if ((remote_peer.row_formats & strata::net::kStageCapKvElem) == 0)
                     std::fprintf(stderr, "strata serve: remote stage: the worker's hello predates the K/V element "
                                          "check: --kv must match by hand\n");
@@ -16538,6 +16576,7 @@ int main(int argc, char** argv) {
                 };
                 int32_t main_ckpt_max = 0;       // the checkpoint parts the main process may have this worker keep
                 uint32_t main_rows = 1u << 0;    // the row formats it lists (a relay's next link asks for the same)
+                uint64_t main_stream_rows = 0;
                 // parked conversations (docs/remote-stage/PARKING.md): this worker keeps them (its hello lists the bit),
                 // the main process it serves parks (its hello does), and what it may hold for them
                 const bool wk_parks = (me.row_formats & strata::net::kStageCapPark) != 0;
@@ -16610,6 +16649,7 @@ int main(int argc, char** argv) {
                     }
                     main_ckpt_max = theirs.ckpt_max;
                     main_rows = theirs.row_formats;
+                    main_stream_rows = theirs.stream_rows;
                     // parked conversations: the budget is this main process's (the RAM available now, its checkpoints)
                     main_parks = wk_parks && (theirs.row_formats & strata::net::kStageCapPark) != 0;
                     park_budget = {};
@@ -16783,8 +16823,9 @@ int main(int argc, char** argv) {
                     mine_next.vision = main_vision;   // the main process's (a worker started with --vision has it)
                     mine_next.ckpt_max = main_ckpt_max;
                     // the main process's formats (until its hello, fp32), this worker's own K/V type
-                    mine_next.row_formats = (main_rows & strata::net::kStageRowsAll) |
-                                            (me.row_formats & ~strata::net::kStageRowsAll);
+                    constexpr uint32_t asked = strata::net::kStageRowsAll | strata::net::kStageCapStreamRows;
+                    mine_next.row_formats = (main_rows & asked) | (me.row_formats & ~strata::net::kStageRowsAll);
+                    mine_next.stream_rows = main_stream_rows;
                     for (int i = 0;; ++i) {
                         // each try can block (a connect's SYN tries, the hello's reply): its own allowance (as in
                         // NextWorkerWait), not a stall
@@ -16797,9 +16838,13 @@ int main(int argc, char** argv) {
                         if (i >= 30 || !strata::net::stage_link_lost(e)) return false;
                         std::this_thread::sleep_for(std::chrono::seconds(2));
                     }
-                    std::fprintf(stderr, "strata serve: relay: layers %d-%d on %s (rows %s; %s)\n", peer_next.layer_begin,
-                                 peer_next.n_layers - 1, o.stage_next.c_str(),
-                                 strata::net::stage_rows_name(next_link.rows()), next_link.tls_peer().c_str());
+                    std::fprintf(stderr, "strata serve: relay: layers %d-%d on %s (rows %s; prompt rows %s out, %s "
+                                         "back; %s)\n", peer_next.layer_begin, peer_next.n_layers - 1,
+                                 o.stage_next.c_str(),
+                                 strata::net::stage_rows_name(next_link.rows(strata::net::StageStream::Window)),
+                                 strata::net::stage_rows_name(next_link.rows(strata::net::StageStream::Prompt)),
+                                 strata::net::stage_rows_name(next_link.rows(strata::net::StageStream::Draft)),
+                                 next_link.tls_peer().c_str());
                     if ((peer_next.row_formats & strata::net::kStageCapKvElem) == 0)
                         std::fprintf(stderr, "strata serve: relay: the next worker's hello predates the K/V element "
                                              "check: --kv must match by hand\n");

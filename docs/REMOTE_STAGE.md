@@ -293,9 +293,10 @@ main process without it.
 | `STRATA_STAGE_TLS=DIR` | every PC | this PC's key folder: `key.pem`, `cert.pem` and `peers/` (`*.pem`, `*.crt`). Required: without it a remote stage does not start. Read at start; restart a stage after changing `peers/` |
 | `strata --stage-keygen DIR [NAME]` | every PC | make DIR's key and certificate (Ed25519, NAME or the PC's host name) and an empty `peers/`, and make DIR this user's alone (mode 0700; on Windows only this user, SYSTEM and Administrators). DIR must be new or empty, this user's own (another user's folder is refused; on Windows one the Administrators own is accepted too), not held open by a process that may move it, and not a link or, on Windows, a junction (a folder holding other files is refused, its permissions left as they were; what a keygen left once its `key.pem` was removed, a `cert.pem` and an empty `peers/`, is not in the way: both are made again), and it never overwrites a key |
 | `STRATA_STAGE_TOKEN` | | no longer used (it was the shared secret before TLS): a stage that finds it says so and goes on |
+| `STRATA_REMOTE_ROWS=fp32\|bf16` | main | the format of the rows on the link: the verify windows' (both ways), the prompt rows going to the worker, and the prompt rows coming back, which only the drafter reads. It sets all three; `STRATA_REMOTE_ROWS_WINDOW`, `STRATA_REMOTE_ROWS_PROMPT` and `STRATA_REMOTE_ROWS_DRAFT` set one each. Default: fp32, except the rows coming back, bf16 (half the bytes; the answers change no more than between two runs). bf16 on the other two changes answers a little and helps on a slow link. A worker takes what its main process asks for; one of 0.1.62 or earlier gets fp32 on every stream unless all three ask for bf16 ([ENGINEERING.md](remote-stage/ENGINEERING.md#row-formats-per-stream-2026-11-20)) |
 | `STRATA_REMOTE_TIMING=1` | any | per-stage timing lines: each prompt chunk, and every 64 windows (see below) |
 | `STRATA_ADAPT_OVERLAP=1` | any | let the adaptive tier's copies land while the next window runs (opt-in on every PC since 0.1.43.1). On a worker it was not measured faster ([ENGINEERING.md](remote-stage/ENGINEERING.md#after-the-rebase-onto-0143-2026-10-12)) |
-| `STRATA_REMOTE_TIMEOUT_S` | any | seconds a send or receive may block before the link counts as dead (default 300). After the hello, a worker waits for the next message without a limit |
+| `STRATA_REMOTE_TIMEOUT_S` | any | seconds a send or receive may block before the link counts as dead (default 300). After the hello, a worker waits for the next message without a limit. The engine's watchdog does not count a send or receive under way, so this is also how long a link that moves nothing can hold a request (see below) |
 | `STRATA_REMOTE_CONNECT_S` | main | seconds the main process keeps trying to connect, every 2 s, while the worker's name does not resolve, nothing listens at its address or the network does not reach it: at its start, and when a request finds the link lost (default 180; 0: one try, with the link's own time-outs). That is the whole wait: each try's connect and the worker's reply to its hello (a worker serving another main process answers once the new one takes it over) get what is left of it, at most `STRATA_REMOTE_TIMEOUT_S` a try (a name with several addresses: 10 s at most for each but the last; the name's lookup itself is not cut short). During a request the main process prints `INFO remote_stage_wait=S` every 10 s meanwhile, so the server does not take the wait for a frozen engine, and a STOP (the client went away) ends the wait at once: that request ends, the main engine stays, and the next request tries again. A refusal (a certificate, the model, the layers, the chunk) is not tried again. A worker down for longer is still found: the server's next request starts the main engine again, which tries anew |
 | `STRATA_REMOTE_TAKEOVER_S` | worker | seconds the connection served must have had no message read, being read, or a reply going out before a new main process may take the worker over (default 30; 0: never, a new one waits until the old one closes) |
 
@@ -320,9 +321,24 @@ with `--prompt-cache`) finds the loss there too. After a reconnect the worker ho
 part: with `--prompt-cache` that request reads its prompt from token 0, and one line says so
 ([remote-stage/CHECKPOINTS.md](remote-stage/CHECKPOINTS.md#after-a-reconnect)). That needs the
 loss seen: a worker process that ended or a link that was reset is seen at once, but when the worker's PC vanished
-without a word a request in the first minute or so (before the keepalive notices) waits for its first reply, and
-the main engine's watchdog (`STRATA_WATCHDOG_S`) ends it first. A link lost in the middle of a request
-ends the main engine, as before. A worker stuck in a message it serves (a window, a prompt chunk, a
+without a word a request in the first minute or so (before the keepalive notices) waits for its first reply until
+the link's own timeouts end it: the keepalive, or at most `STRATA_REMOTE_TIMEOUT_S`. A link lost in the middle of a
+request ends the main engine, as before.
+
+The main engine's watchdog (`STRATA_WATCHDOG_S`) does not count the time a send or receive on the link is under way,
+each one up to `STRATA_REMOTE_TIMEOUT_S`. Over a slow link that time is long: one 2,944-token prompt chunk is 120 MB
+of fp32 rows, about 50 s each way at 20 Mbit/s, and the watchdog used to stop the engine in the middle of a 4K
+prompt. Meanwhile the main process prints `INFO remote_stage_wait=S` every 10 s, so the server's check for a frozen
+engine (`STRATA_ENGINE_STALL_S`) leaves it alone too. A link that moves nothing still ends the request: the send or
+receive times out, the request gets the remote-stage error and a 503, and the next request starts the main engine
+again. Measured through a shaping proxy (15 ms each way, 20 Mbit/s, fp32 rows, default settings): a 4,179-token
+prompt read in 119 s and an 8,478-token one in 190 s, with no watchdog stop; the link cut to 0.001 Mbit/s 30 s into
+the 8,478-token prompt ended that request 293 s later with `remote stage: send failed: Broken pipe` and a 503, and
+the next request was answered 39 s after (the main engine started again). Without the 10 s lines the server had
+ended the silent engine 152 s into the same stall, as frozen. With the rows coming back in bf16 (the default since)
+the same 4,179-token prompt read in 85 s, and with `STRATA_REMOTE_ROWS=bf16` in 61 s.
+
+A worker stuck in a message it serves (a window, a prompt chunk, a
 commit, a reset, a position table, a checkpoint save or restore) for `STRATA_WATCHDOG_S` (60 s) ends with a stall
 report, as a main process does, and its agent starts it again ([Tools](#tools)). A relay's waits for its next worker
 do not count: they end by the link's timeouts, and the next worker has its own watchdog. A relay looks at its link to

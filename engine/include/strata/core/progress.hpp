@@ -25,6 +25,8 @@ struct Progress {
     /// a step that blocks in one call (a file flush, a host->device transfer of a whole session) is given until this
     /// time (steady ms; 0 = none) instead of the watchdog's limit - an explicit, bounded allowance, not a beat
     std::atomic<int64_t> allow_until_ms{0};
+    std::atomic<int> link_calls{0};          ///< remote stage: link reads and writes under way (LinkCall)
+    std::atomic<int64_t> link_call_ms{0};    ///< when the latest of them began (steady ms)
 };
 
 inline int64_t progress_now_ms() {
@@ -73,6 +75,28 @@ inline void progress_tick() { progress().ticks.fetch_add(1, std::memory_order_re
 inline void progress_allow(int64_t seconds) {
     progress().allow_until_ms.store(seconds > 0 ? progress_now_ms() + seconds * 1000 : 0, std::memory_order_relaxed);
     progress_beat();
+}
+
+/// Remote stage: one read or write on the link that may block (a scope around the socket call).  While one is under
+/// way and began less than the link's time-out ago, the watchdog takes the silence for the link's, not a stall: a slow
+/// link still moves a prompt chunk's rows, and one that moves nothing ends the call by the socket's own time-out
+/// (STRATA_REMOTE_TIMEOUT_S), which ends the request as a lost link.  A remote stage's main prints
+/// `INFO remote_stage_wait=S` every 10 s of such a wait, so the server does not take it for a frozen engine either.
+struct LinkCall {
+    LinkCall() {
+        progress().link_call_ms.store(progress_now_ms(), std::memory_order_relaxed);
+        progress().link_calls.fetch_add(1, std::memory_order_relaxed);
+    }
+    ~LinkCall() { progress().link_calls.fetch_sub(1, std::memory_order_relaxed); }
+    LinkCall(const LinkCall&) = delete;
+    LinkCall& operator=(const LinkCall&) = delete;
+};
+
+/// Whether a link read or write (LinkCall) is under way that began less than `limit_s` seconds before `now_ms`.
+inline bool progress_link_waiting(int64_t now_ms, int64_t limit_s) {
+    const Progress& p = progress();
+    return p.link_calls.load(std::memory_order_relaxed) > 0 &&
+           now_ms - p.link_call_ms.load(std::memory_order_relaxed) < limit_s * 1000;
 }
 
 }  // namespace strata::core
