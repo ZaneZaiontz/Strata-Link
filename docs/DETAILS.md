@@ -558,7 +558,9 @@ applies at the next start. Network, key, MCP and program keys are not editable t
 ### Streaming and tool calls
 
 - With `"stream": true` everything arrives as it is made: thinking, answer and tool calls (the tool's name first, then its
-  arguments piece by piece). While the model reads a long prompt the stream sends keep-alives. The server window prints progress
+  arguments piece by piece). While the model reads a long prompt the stream sends `: keep-alive` comments, and every 5 s
+  a real event for clients that only count events: an empty delta on `/v1/chat/completions`, `event: ping` on
+  `/v1/messages` (`/v1/responses` sends `response.in_progress` every 15 s). The server window prints progress
   every 15 s and `GET /status` says what it is doing. Closing the connection or pressing stop in your app stops the model.
 - A tool call counts only when it names a tool the request declared. A namespaced tool (`mcp__filesystem.write_file`) is
   that call when the model writes `mcp__filesystem__write_file`, `mcp__filesystem=write_file`, `mcp__filesystem_write_file`,

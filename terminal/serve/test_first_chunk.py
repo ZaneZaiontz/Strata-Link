@@ -8,6 +8,7 @@ import os
 import sys
 import unittest
 from types import SimpleNamespace
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from serve.frontend import Event, ToolCall  # noqa: E402
@@ -107,6 +108,13 @@ class RoleChunkAfterPrefill(unittest.TestCase):
         self.assertEqual(chunks[0]["choices"][0]["delta"], ROLE)
         self.assertEqual(chunks[1]["prompt_progress"],
                          {"total": 1000, "cache": 50, "processed": 100, "time_ms": 25})
+        self.assertEqual(sum("role" in c["choices"][0]["delta"] for c in chunks), 1)
+
+    def test_read_beats_come_after_the_role(self):
+        with mock.patch("serve.server.PREFILL_BEAT_S", 0.0):
+            chunks = [c for _, c in stream([("ping", None), ("ping", None), "prompt-read",
+                                            ("event", Event("content", "hi")), DONE])]
+        self.assertEqual([c["choices"][0]["delta"] for c in chunks[:4]], [ROLE, {}, {}, {"content": "hi"}])
         self.assertEqual(sum("role" in c["choices"][0]["delta"] for c in chunks), 1)
 
     def test_unavailable_progress_keeps_stream_closed(self):
