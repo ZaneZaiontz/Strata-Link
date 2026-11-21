@@ -1,11 +1,11 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="apps/host/public/brand/strata-lockup-dark.svg">
-    <img src="../../app/host/public/brand/strata-lockup-light.svg" alt="Strata Link" width="340">
+    <img src="../../app/host/public/brand/strata-lockup-light.svg" alt="Strata-Net" width="340">
   </picture>
 </p>
 
-<h1 align="center">Strata Link</h1>
+<h1 align="center">Strata-Net</h1>
 
 <h3 align="center">あなた自身のパソコンで、高性能な AI を。</h3>
 <p align="center">チャット、コーディング、画像の処理を、すべてローカルで。</p>

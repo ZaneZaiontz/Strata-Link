@@ -132,9 +132,10 @@ def pack(engine: Path, vision: Path, out: Path, platform: str, link: str, commit
     version = ec.get("CMAKE_PROJECT_VERSION") or ec.get("strata_VERSION") or ""
     if not re.fullmatch(r"\d+(\.\d+)+", version):
         sys.exit(f"{engine}: no project version in CMakeCache.txt (CMAKE_PROJECT_VERSION={version!r})")
-    m = re.fullmatch(r"(\d+(?:\.\d+)+)-link\.(\d+)", link)
+    m = re.fullmatch(r"(\d+(?:\.\d+)+)-(?:link|net)\.(\d+)", link)
     if not m or m.group(1) != version:
-        sys.exit(f"LINK_VERSION is {link!r}: it must be <the engine's version>-link.<n>, the engine is {version}")
+        sys.exit(f"LINK_VERSION is {link!r}: it must be <the engine's version>-net.<n> (or -link.<n>), "
+                 f"the engine is {version}")
     cuda, vcuda = cuda_version(engine), cuda_version(vision)
     if cuda != vcuda:
         sys.exit(f"the engine is built with CUDA {cuda}, the image encoder with {vcuda}: one toolkit per zip")

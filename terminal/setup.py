@@ -264,7 +264,7 @@ LLAMA_CPP_COMMIT = "3cf03257f219afbe7334045ff7c6a06ac68c627d"
 # The repository the release assets and their SHA-256 come from; `engine_digest` reads the API here even
 # when --prebuilt points the download somewhere else, because the hash is only worth having if it comes
 # from somewhere the download does not.
-REPO = "ZaneZaiontz/Strata-Link"
+REPO = "ZaneZaiontz/Strata-Net"
 PREBUILT_URL = f"https://github.com/{REPO}/releases/latest/download/"
 PREBUILT_TAG_URL = f"https://github.com/{REPO}/releases/download/v{{version}}/"
 PREBUILT_ASSET = "strata-windows-x64.zip" if WIN else "strata-linux-x64.zip"
@@ -5917,7 +5917,7 @@ def get_prebuilt(url_base, gpu, vision, updating=False, toolkit=13) -> Path | No
         # a DGX Spark: the release has no flat engine zip for it (and the CUDA 12 engine is x86). Upstream (0.2.7.1) takes the
         # linux-aarch64 package of its signed feed here; Strata Link does not (as for the flat zips below: that engine is upstream's,
         # without Link's engine changes), so the caller compiles it, as before 0.2.7.1 (spark/build_engine.sh does the same by hand)
-        warn(f"Strata Link has no ready-made engine for {sysinfo.machine()}" + ("" if updating else ": compiling it here, once"))
+        warn(f"Strata-Net has no ready-made engine for {sysinfo.machine()}" + ("" if updating else ": compiling it here, once"))
         return None
     if not url_base:
         return None
@@ -7891,7 +7891,7 @@ def update_pull(argv: list) -> int | None:
     if repo is None:
         if source_download():
             say("  This copy of Strata was not made with git, so it cannot fetch new files itself. Download the newest one:")
-            say("    https://github.com/ZaneZaiontz/Strata-Link/archive/refs/heads/main.zip")
+            say(f"    https://github.com/{REPO}/archive/refs/heads/main.zip")
             say(f"  unzip it anywhere and run {'START-HERE.bat' if WIN else './setup.sh'} in it: it finds the model files in Strata-data")
             say("  and sets itself up the same way - nothing big is downloaded again.")
             say("  Checking this copy's engine and settings meanwhile ...")
@@ -10958,10 +10958,13 @@ def link_version() -> str:
 
 
 def link_key(v) -> tuple:
-    """'0.1.45-link.2' -> ((0, 1, 45), 2), comparable; anything else (an upstream engine has no "link") is
-    ((), 0), older than every Link release."""
-    m = re.fullmatch(r"(\d+(?:\.\d+)*)-link\.(\d+)", str(v or "").strip())
-    return (tuple(int(x) for x in m.group(1).split(".")), int(m.group(2))) if m else ((), 0)
+    """'0.1.45-link.2' -> ((0, 1, 45), 0, 2), comparable; a Strata-Net release ('0.1.62-net.1') comes after every
+    -link one of the same engine version; anything else (an upstream engine has no "link") is ((), 0, 0), older than
+    every release."""
+    m = re.fullmatch(r"(\d+(?:\.\d+)*)-(link|net)\.(\d+)", str(v or "").strip())
+    if not m:
+        return (), 0, 0
+    return tuple(int(x) for x in m.group(1).split(".")), int(m.group(2) == "net"), int(m.group(3))
 
 
 def link_outdated(meta: dict) -> bool:
@@ -11063,7 +11066,7 @@ def link_accepts(eng: Path, meta: dict, base: str, updating=False) -> bool:
     link = meta.get("link")
     if link_key(link) < link_key(LINK_REQUIRED):
         warn(f"the ready-made engine at {base} is {link or 'version ' + str(meta.get('version'))}; this setup needs "
-             f"Strata Link {LINK_REQUIRED} or newer" + ("" if updating else ": compiling instead"))
+             f"engine {LINK_REQUIRED} or newer" + ("" if updating else ": compiling instead"))
         return False
     if link_key(link) < link_key(link_version()):
         if base == PREBUILT_URL:
@@ -11153,7 +11156,7 @@ def get_prebuilt(url_base, gpu, vision, updating=False, toolkit=13) -> Path | No
         restore()
         (warn if loud else lambda m: say("  " + m))(
             f"{why}: keeping the installed engine {have}" + ("" if installed.get("link") else
-            " (upstream's: Strata Link's own engine changes are off until it updates)"))
+            " (upstream's: Strata-Net's own engine changes are off until it updates)"))
         return eng
 
     if note and note["why"] == "does not start":
@@ -11188,7 +11191,7 @@ def get_prebuilt(url_base, gpu, vision, updating=False, toolkit=13) -> Path | No
         elif retry:
             note_release(eng, "does not start", retry.get("found"), retry.get("detail"))
         # upstream's get_prebuilt said why (a [!] line) unless it raised or had no URL
-        return keep(f"Strata Link's engine {link_version()} could not be had{err or ''}", err is not None or not url_base)
+        return keep(f"Strata-Net's engine {link_version()} could not be had{err or ''}", err is not None or not url_base)
     return got
 
 

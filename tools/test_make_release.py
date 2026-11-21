@@ -84,6 +84,13 @@ class Pack(unittest.TestCase):
             self.assertFalse(setup.link_outdated(meta))
         self.assertEqual(setup.prebuilt_vision(meta, {"arch": 89}, "gpu"), "gpu")
 
+    def test_a_strata_net_release_packs_too(self):
+        net = f"{VERSION}-net.1"
+        z = quiet(make_release.pack, engine_build(self.tmp / "e"), vision_build(self.tmp / "v"), self.out, "windows",
+                  net, None)
+        with zipfile.ZipFile(z) as f:
+            self.assertEqual(json.loads(f.read("BUILD.json"))["link"], net)
+
     def test_the_cuda12_zip_is_the_experimental_one(self):
         archs = "60-real;61-real;70-real;75-real;80-real;86-real;89"
         z = quiet(make_release.pack, engine_build(self.tmp / "e", cuda="12.9.86", archs=archs),

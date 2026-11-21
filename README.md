@@ -1,19 +1,19 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="apps/host/public/brand/strata-lockup-dark.svg">
-    <img src="app/host/public/brand/strata-lockup-light.svg" alt="Strata Link" width="340">
+    <img src="app/host/public/brand/strata-lockup-light.svg" alt="Strata-Net" width="340">
   </picture>
 </p>
 
-<h1 align="center">Strata Link</h1>
+<h1 align="center">Strata-Net</h1>
 
-<p align="center"><sub>Strata Link is a fork of Strata. Its mark uses a cyan middle bar so it is not mistaken for upstream Strata's.</sub></p>
+<p align="center"><sub>Strata-Net is a fork of lask3802's Strata-Link, which is a fork of Strata. Its mark uses a cyan middle bar so it is not mistaken for upstream Strata's.</sub></p>
 
 <h3 align="center">Run powerful AI on your own computer.</h3>
 <p align="center">Chat, code and work with images, locally.</p>
 
 <p align="center">
-  <a href="#models">Models</a> · <a href="#strata-link-one-model-on-two-or-more-pcs">Strata Link</a> · <a href="#install"><b>Install</b></a> ·
+  <a href="#models">Models</a> · <a href="#one-model-on-two-or-more-pcs">Two or more PCs</a> · <a href="#install"><b>Install</b></a> ·
   <a href="#hardware">Hardware</a> · <a href="#tools">Tools</a> ·
   <a href="#help">Help</a> · <a href="#support-strata">Support</a>
 </p>
@@ -60,10 +60,12 @@ We recommend **ISTA-DASLab first**, then **Unsloth** and other providers, where 
 
 Not sure what fits? [Choose a model for your computer](docs/MODELS.md#pick-by-memory).
 
-## Strata Link: one model on two or more PCs
+<a id="strata-link-one-model-on-two-or-more-pcs"></a>
 
-Strata Link's main addition to Strata: it can split the model across PCs on your network. This helps when the model
-does not fit one PC well, but you have a second PC with a graphics card.
+## One model on two or more PCs
+
+The main addition to Strata, from lask3802's Strata-Link: it can split the model across PCs on your network.
+This helps when the model does not fit one PC well, but you have a second PC with a graphics card.
 
 - **Each PC loads only its own layers' experts into RAM**, so no PC needs RAM for the whole model. Every PC still needs
   the model's files; `terminal/tools/stage_ship.py` sends a worker only its layers.
@@ -99,8 +101,8 @@ What has been run, and what has not:
 | **Not run by us** | An AMD main PC, a Windows main PC (one user report above), other models |
 | **Not supported** | Intel cards (the SYCL engine has no remote stage) and a Mac (the Metal engine refuses it at start) |
 
-Setup, the earlier measurements and the limits: [docs/REMOTE_STAGE.md](docs/REMOTE_STAGE.md). Link's own releases:
-[ZaneZaiontz/Strata-Link](https://github.com/ZaneZaiontz/Strata-Link/releases).
+Setup, the earlier measurements and the limits: [docs/REMOTE_STAGE.md](docs/REMOTE_STAGE.md). This fork's releases:
+[ZaneZaiontz/Strata-Net](https://github.com/ZaneZaiontz/Strata-Net/releases).
 
 ## Install
 
@@ -175,7 +177,7 @@ Follow the prompts to download and start a model. [Terminal guide](docs/TERMINAL
 | **NVIDIA DGX Spark · Linux** | [DGX Spark setup](docs/DGX_SPARK_LINUX.md) |
 
 Two or three cards of the same make in one PC can share a model ([multi-GPU](docs/MULTI_GPU.md)); across PCs, see
-[Strata Link](#strata-link-one-model-on-two-or-more-pcs).
+[two or more PCs](#one-model-on-two-or-more-pcs).
 
 <a id="using-it"></a>
 
@@ -188,7 +190,7 @@ Run **`strata connect`** to see setup instructions for your tool. [Connection gu
 ## Credits
 
 - **Strata** is by [Niko1221](https://github.com/Niko1221) and the Strata contributors:
-  [Niko1221/Strata](https://github.com/Niko1221/Strata). Strata Link is built on it. Model and library credits:
+  [Niko1221/Strata](https://github.com/Niko1221/Strata). Strata-Net is built on it. Model and library credits:
   [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md#credits).
 - **The remote stage** is by [lask3802](https://github.com/lask3802): the split across PCs and everything built on it,
   including its TLS, the node agent, `stage_ship`, the tuner, checkpoints, parking and session files. It was proposed

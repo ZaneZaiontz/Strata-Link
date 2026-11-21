@@ -1,4 +1,4 @@
-# Strata Link's ready-made engines: the zips setup.py downloads (tools/make_release.py), built here instead of by hand.
+# Strata-Net's ready-made engines: the zips setup.py downloads (tools/make_release.py), built here instead of by hand.
 #
 #   a tag v<LINK_VERSION> (v0.1.45-link.1):   build every zip, then a DRAFT release with them and SHA256.txt; the
 #                                             owner reads it over and publishes it
@@ -14,8 +14,10 @@
 # hash, in both: through vcpkg (pinned to a release, an overlay port) on Windows, built from source on Rocky Linux 8; a
 # release build without it stops at configure.
 #
-# LINK_VERSION (<CMakeLists.txt's version>-link.<n>): bump n only when the engine binary changes (its sources, its
-# build, the toolkit); an upstream merge that changes CMakeLists.txt's version starts again at <new version>-link.1.
+# LINK_VERSION (<CMakeLists.txt's version>-net.<n>): bump n only when the engine binary changes (its sources, its
+# build, the toolkit); an upstream merge that changes CMakeLists.txt's version starts again at <new version>-net.1.
+# Releases before Strata-Net are <version>-link.<n>: the first -net one starts at -net.1, and setup puts every -net
+# release after every -link one of the same engine version, so an installed -link engine is replaced as usual.
 # Every installed engine older than it is replaced (~150 MB each), so a setup or serve change alone does not bump it.
 # setup.py's LINK_REQUIRED, the oldest release setup still installs, moves only when setup or serve needs a newer
 # engine.  Publish the release before the commit that bumps LINK_VERSION reaches main: until then setup installs or
@@ -26,7 +28,7 @@ name: release
 
 on:
   push:
-    tags: ["v*-link.*"]
+    tags: ["v*-link.*", "v*-net.*"]
     branches: ["ci/**"]
   workflow_dispatch:
 
@@ -53,14 +55,14 @@ jobs:
         run: |
           link=$(cd terminal && python3 -c "import setup; print(setup.link_version())")
           engine=$(cd terminal && python3 -c "import setup; print(setup.source_version())")
-          if ! printf '%s' "$link" | grep -Eqx '[0-9.]+-link\.[0-9]+' || [ "${link%-link.*}" != "$engine" ]; then
-            echo "::error::LINK_VERSION is '$link'; CMakeLists.txt's version is $engine: it must be $engine-link.<n>"; exit 1
+          if ! printf '%s' "$link" | grep -Eqx '[0-9.]+-(link|net)\.[0-9]+' || [ "${link%-*}" != "$engine" ]; then
+            echo "::error::LINK_VERSION is '$link'; CMakeLists.txt's version is $engine: it must be $engine-net.<n>"; exit 1
           fi
           if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$link" ]; then
             echo "::error::the tag is $GITHUB_REF_NAME, LINK_VERSION says v$link"; exit 1
           fi
           echo "link=$link" >> "$GITHUB_OUTPUT"
-          echo "Strata Link $link (engine $engine)"
+          echo "Strata-Net $link (engine $engine)"
 
   windows:
     name: windows ${{ matrix.zip }} ${{ matrix.part }}
@@ -359,6 +361,6 @@ jobs:
           if [ -n "$have" ]; then
             echo "::error::$GITHUB_REF_NAME already has a release ($have): delete it to make the draft again"; exit 1
           fi
-          printf 'Strata Link %s, built by the release workflow from %s (run %s).\n\nSHA256.txt: the SHA-256 of each zip.\n' \
+          printf 'Strata-Net %s, built by the release workflow from %s (run %s).\n\nSHA256.txt: the SHA-256 of each zip.\n' \
             "$LINK" "$GITHUB_SHA" "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" > notes.md
-          gh release create "$GITHUB_REF_NAME" dist/* --draft --verify-tag --title "Strata Link $LINK" --notes-file notes.md
+          gh release create "$GITHUB_REF_NAME" dist/* --draft --verify-tag --title "Strata-Net $LINK" --notes-file notes.md

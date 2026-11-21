@@ -48,7 +48,7 @@ class Response(io.BytesIO):
 class TheCheckoutsRelease(unittest.TestCase):
     def test_link_version_is_this_engine_version_plus_a_link_number(self):
         link = setup.link_version()
-        m = re.fullmatch(r"(\d+(?:\.\d+)+)-link\.(\d+)", link)
+        m = re.fullmatch(r"(\d+(?:\.\d+)+)-(?:link|net)\.(\d+)", link)
         self.assertIsNotNone(m, f"LINK_VERSION is {link!r}")
         # an upstream merge that moves CMakeLists.txt's version needs a new LINK_VERSION: the old tag holds an engine
         # MIN_ENGINE refuses, and the latest release would never be asked
@@ -68,10 +68,16 @@ class TheCheckoutsRelease(unittest.TestCase):
     def test_link_releases_compare_by_version_then_number(self):
         order = [None, "", "0.1.44.1", "0.1.44.1-link.1", "0.1.44.1-link.2", "0.1.44.1-link.10", "0.1.45-link.1"]
         keys = [setup.link_key(v) for v in order]
-        self.assertEqual(keys[:3], [((), 0)] * 3)               # not a Link release: older than every one
+        self.assertEqual(keys[:3], [((), 0, 0)] * 3)            # not a Link release: older than every one
         self.assertEqual(keys[3:], sorted(keys[3:]))
         self.assertLess(keys[2], keys[3])
         self.assertLess(setup.link_key("0.1.44.1-link.9"), setup.link_key("0.1.44.1-link.10"))
+
+    def test_net_releases_come_after_the_link_ones_of_the_same_engine(self):
+        order = ["0.1.62-link.1", "0.1.62-link.9", "0.1.62-net.1", "0.1.62-net.2", "0.1.63-link.1", "0.1.63-net.1"]
+        keys = [setup.link_key(v) for v in order]
+        self.assertEqual(keys, sorted(keys))
+        self.assertEqual(len(set(keys)), len(keys))
 
     def test_link_required_is_the_tls_remote_stage(self):
         """No release from before the remote stage's TLS: an older engine's worker, started by this checkout's
@@ -176,6 +182,15 @@ class GetPrebuilt(unittest.TestCase):
         self.assertEqual((self.root / "engine" / setup.EXE).read_bytes(), b"new")
         self.assertNotIn("could not be reached", out)
 
+    def test_a_link_engine_is_replaced_by_the_net_release_of_the_same_engine(self):
+        self.installed(source="release", link=self.LINK)
+        self.LINK = "0.1.44.1-net.1"
+        tag = setup.PREBUILT_TAG_URL.format(version=self.LINK)
+        eng, out, heads, got = self.run_get([tag], self.release(self.LINK))
+        self.assertEqual(got, [tag + setup.PREBUILT_ASSET])
+        self.assertEqual((self.root / "engine" / setup.EXE).read_bytes(), b"new")
+        self.assertIn("0.1.44.1-link.2 -> 0.1.44.1-net.1", out)
+
     def test_a_release_not_newer_than_the_installed_one_is_not_installed(self):
         """The latest release is still the installed Link one (this checkout's is uploading): the installed engine
         stays, BUILD.json and all, and the tag is asked again a day later."""
@@ -243,7 +258,7 @@ class GetPrebuilt(unittest.TestCase):
         self.installed(source="release")                           # Niko1221's 0.1.44.1, no "link"
         eng, out, _, _ = self.run_get([], {})
         self.assertEqual(eng, self.root / "engine")
-        self.assertIn("Strata Link's own engine changes are off until it updates", out)
+        self.assertIn("Strata-Net's own engine changes are off until it updates", out)
 
     def test_a_download_that_fails_keeps_the_installed_engine(self):
         self.installed(source="release", link="0.1.44.1-link.1")
@@ -363,7 +378,7 @@ class GetPrebuilt(unittest.TestCase):
             eng, out, _, got = self.run_get([setup.PREBUILT_URL], self.release("0.1.44.1-link.1"))
         self.assertIsNone(eng)
         self.assertEqual(len(got), 1)
-        self.assertIn("needs Strata Link 0.1.44.1-link.2 or newer: compiling instead", out)
+        self.assertIn("needs engine 0.1.44.1-link.2 or newer: compiling instead", out)
         self.assertFalse((self.root / "engine" / setup.EXE).exists())
 
     def test_upstreams_release_zip_is_not_installed(self):
