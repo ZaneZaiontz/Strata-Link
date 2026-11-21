@@ -22,6 +22,7 @@
   "chat.newToastText": "前のチャットは左の一覧にあります。",
   "chat.projectionOff": "プロジェクションオフ",
   "chat.projectionOn": "プロジェクションオン",
+  "chat.recovering": "システムが切断されました - 復旧中...",
   "chat.stopped": "停止しました",
   "chat.stoppedLower": "停止",
   "chat.tokens": {"other": "{n} トークン"},

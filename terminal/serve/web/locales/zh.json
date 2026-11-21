@@ -22,6 +22,7 @@
   "chat.newToastText": "之前的聊天在左侧列表中。",
   "chat.projectionOff": "投影关闭",
   "chat.projectionOn": "投影开启",
+  "chat.recovering": "系统掉线 - 正在恢复...",
   "chat.stopped": "已停止",
   "chat.stoppedLower": "已停止",
   "chat.tokens": {"other": "{n} 个 token"},

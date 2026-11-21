@@ -22,6 +22,7 @@
   "chat.newToastText": "Прежний чат остался в списке слева.",
   "chat.projectionOff": "проекция выключена",
   "chat.projectionOn": "проекция включена",
+  "chat.recovering": "система отключилась - восстановление...",
   "chat.stopped": "Остановлено",
   "chat.stoppedLower": "остановлено",
   "chat.tokens": {"one": "{n} токен", "few": "{n} токена", "many": "{n} токенов", "other": "{n} токена"},

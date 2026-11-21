@@ -16503,6 +16503,8 @@ int main(int argc, char** argv) {
                 const StageRows draft = rows_env("STRATA_REMOTE_ROWS_DRAFT", StageRows::BF16);
                 if (!rows_ok) return 1;
                 strata::net::stage_rows_ask(me, window, prompt, draft);
+                me.row_formats |= strata::net::kStageCapResume;
+                me.instance = (uint64_t) std::chrono::system_clock::now().time_since_epoch().count() | 1;
                 remote_hello = me;
                 if (!remote_connect(err, false)) {
                     std::fprintf(stderr, "strata serve: %s\n", err.c_str());
@@ -17297,9 +17299,10 @@ int main(int argc, char** argv) {
                         }
                         return wk_positions_set(table, cells_in, e);
                     };
+                if (!stage_relay) hs.new_main = [&] { ckpt_store.clear(); };
                 hs.disconnected = [&] {
                     std::string e;
-                    ckpt_store.clear();   // a new main process is a new id space
+                    if (stage_relay) ckpt_store.clear();   // a new main process is a new id space
                     park_store.clear();   // (its parked conversations too)
                     (void) ver.wait_commit(e);
                     // a picture's positions do not reach the next main process's text (a relay's next worker resets
@@ -17537,15 +17540,16 @@ int main(int argc, char** argv) {
         // mrope_host) - a link made again gets them again, as a worker's table starts from the identity
         int64_t remote_pos_cells = -1;
         // remote-stage main: the link was made again since a request's start last looked (a new connection, maybe a
-        // new worker process): the worker holds no session and no checkpoint part, so this side's live session and
+        // new worker process): the worker holds no session and no checkpoint part (unless it kept this process's parts:
+        // stage_resumes, and then only the live session goes), so this side's live session and
         // checkpoints are dropped (before the resume decision, or after a read from token 0 that made it again).
         // Never cleared before that: a request refused in between leaves it to the next one.
         bool remote_fresh = false;
         // A request's first messages (its positions, its reset) found the link lost: connect again (remote_connect)
         // and send this request's positions again; the caller then sends its message again.  Nothing of the old
         // connection carries over: the worker zeroes its session at the reset, its checkpoint parts went with the old
-        // connection (remote_fresh), and the hello carries the rest (the tail-skip rank, --vision, the chunk).  A link
-        // lost in the middle of a request still ends the engine.
+        // connection unless it kept them (remote_fresh, stage_resumes), and the hello carries the rest (the tail-skip
+        // rank, --vision, the chunk).  A link lost in the middle of a request ends that request (remote_survivable).
         auto remote_relink = [&](std::string& e) -> bool {
             if (!strata::net::stage_link_lost(e)) return false;
             const std::string lost = e;
@@ -17571,6 +17575,32 @@ int main(int argc, char** argv) {
                          o.remote_stage.c_str(), lost.c_str());
             std::fflush(stderr);
             return true;
+        };
+        // A link lost in the middle of a request, or the worker's own error, on a serial path (no --pipeline-windows,
+        // no --batch): once the GPU has finished what is still in flight (a prompt chunk's own layers may be) without
+        // a fault, the request ends with the error and the engine stays; the next request connects again and reads
+        // its prompt from the deepest checkpoint the worker kept (stage_resumes), else from token 0
+        auto remote_survivable = [&](const std::string& e) {
+            return remote_main && !pipe && o.batch == 0 && cudaDeviceSynchronize() == cudaSuccess &&
+                   (strata::net::stage_link_lost(e) || e.rfind("remote stage (worker): ", 0) == 0);
+        };
+        // A request's reset or restore (its call in `call`): `INFO remote_stage_wait=` lines while its reply is
+        // waited for, and a STOP ends that wait at once - a worker that vanished without a word between requests
+        // (power, cable) answers nothing, and the link would see it only after STRATA_REMOTE_TIMEOUT_S
+        auto remote_waiting = [&](auto&& call) {
+            const RemoteWaitLines lines(true);
+            return call(&stop_req);
+        };
+        // That reset or restore failed with the link lost and could not make it again, or a STOP came while it
+        // waited or connected again: the request ends with `e` and `what`.  The engine stays after a STOP, or where
+        // remote_survivable keeps it, with the link closed so the next request connects again; false: it ends.
+        auto remote_start_failed = [&](const std::string& e, const std::string& what) {
+            const bool kept = remote_cancelled || strata::net::stage_wait_cancelled(e) ||
+                              (strata::net::stage_link_lost(e) && remote_survivable(e));
+            if (kept) remote_link.close();
+            std::printf("%sERR %s%s\n", kept ? "INFO remote_stage_kept=1\n" : "", e.c_str(), what.c_str());
+            std::fflush(stdout);
+            return kept;
         };
         auto remote_positions = [&](bool table, int64_t cells, std::string& e) -> bool {
             remote_pos_cells = table ? cells : 0;
@@ -19968,12 +19998,12 @@ int main(int argc, char** argv) {
             // another main process took it over) is made again here, before anything is sent or decided: a request
             // that continues the live session sends nothing before its first window, which would find it lost in
             // the middle of the request.  A check with nothing sent; a peer that vanished without a word is not seen.
-            // (A STOP while connecting again ends this request; the link stays closed, so the next one looks again.)
+            // (A failed reconnect, or a STOP meanwhile, ends this request with the engine kept; the link stays closed,
+            // so the next one looks again.)
             if (remote_main && !remote_link.alive(err) && !remote_relink(err)) {
-                std::printf("ERR %s\n", err.c_str());
+                std::printf("INFO remote_stage_kept=1\nERR %s\n", err.c_str());
                 std::fflush(stdout);
-                if (remote_cancelled) continue;
-                return 1;
+                continue;
             }
             if (geni || !mrope_identity) {
                 // positions for every cell this request can reach; the identity again for a text request
@@ -20269,6 +20299,14 @@ int main(int argc, char** argv) {
             // worker holds neither the live session nor any checkpoint part, so neither is continued from (every
             // checkpoint of a remote main has a part there) and this prompt is read from token 0, its reset keeping
             // nothing
+            if (remote_fresh && strata::net::stage_resumes(remote_hello, remote_peer)) {
+                remote_fresh = false;
+                if (live_ok || !checks.empty())
+                    std::fprintf(stderr, "strata serve: remote stage: the worker kept its checkpoint parts after "
+                                         "connecting again: dropped the live session, %zu checkpoint%s kept\n",
+                                 checks.size(), checks.size() == 1 ? "" : "s");
+                live_ok = false;
+            }
             if (remote_fresh) {
                 remote_fresh = false;
                 if (live_ok || !checks.empty())
@@ -20966,13 +21004,13 @@ int main(int argc, char** argv) {
                     remote_park_extra.clear();   // (taken: its checkpoints are this chain's now)
                     const auto tw = Clock::now();
                     bool missing = park_id == 0;
-                    if (!missing &&
-                        !remote_link.park_restore(park_id, (int64_t) live.size(), remote_keep(), missing, err)) {
-                        if (!missing && strata::net::stage_link_lost(err)) {
+                    if (!missing && !remote_waiting([&](auto stop) {
+                            return remote_link.park_restore(park_id, (int64_t) live.size(), remote_keep(), missing,
+                                                            err, stop);
+                        })) {
+                        if (!missing && (strata::net::stage_link_lost(err) || strata::net::stage_wait_cancelled(err))) {
                             if (!remote_relink(err)) {
-                                std::printf("ERR %s (restoring a parked conversation)\n", err.c_str());
-                                std::fflush(stdout);
-                                if (remote_cancelled) continue;   // (a STOP: the link stays closed, the engine stays)
+                                if (remote_start_failed(err, " (restoring a parked conversation)")) continue;
                                 return 1;
                             }
                             missing = true;
@@ -21048,10 +21086,10 @@ int main(int argc, char** argv) {
                 strata::core::session_zero(ss, g, nullptr, main_cs);
                 cudaStreamSynchronize(main_stream);
                 // (a link lost while idle: made again, then the reset again - the new worker holds no checkpoint
-                // parts, so its reset keeps none; else the engine ends, as mid-request, but for a STOP while
-                // connecting again: `remote_cancelled`, the caller's request ends and the link stays closed)
-                if (remote_main && !remote_link.reset(keep, err) &&
-                    !(remote_relink(err) && remote_link.reset({}, err)))
+                // parts, so its reset keeps none; else the caller's request ends: remote_start_failed)
+                if (remote_main && !remote_waiting([&](auto stop) { return remote_link.reset(keep, err, stop); }) &&
+                    !(remote_relink(err) &&
+                      remote_waiting([&](auto stop) { return remote_link.reset({}, err, stop); })))
                     return false;
                 for (auto& st : stages) {
                     const strata::core::OnDevice on(st->dev);
@@ -21062,9 +21100,7 @@ int main(int argc, char** argv) {
             };
             if (resume == 0) {
                 if (!session_from0(remote_keep())) {
-                    std::printf("ERR %s\n", err.c_str());
-                    std::fflush(stdout);
-                    if (remote_cancelled) continue;   // (a STOP while connecting again: the engine stays)
+                    if (remote_start_failed(err, "")) continue;
                     return 1;
                 }
                 checks.clear();
@@ -21087,9 +21123,7 @@ int main(int argc, char** argv) {
                     // checkpoint missed shows up as a difference.  (A remote stage: the worker's session too, its
                     // checkpoint parts kept.)
                     if (!session_from0(remote_keep())) {
-                        std::printf("ERR %s\n", err.c_str());
-                        std::fflush(stdout);
-                        if (remote_cancelled) continue;
+                        if (remote_start_failed(err, "")) continue;
                         return 1;
                     }
                     if (remote_fresh) {   // the link was made again there: the worker's parts are gone (`c` with them)
@@ -21111,15 +21145,17 @@ int main(int argc, char** argv) {
                     return 1;
                 } else if (remote_main) {   // the worker's part of the same checkpoint
                     bool missing = false;
-                    if (!remote_link.ckpt_restore(c->remote_id, resume, remote_keep(), missing, err)) {
+                    if (!remote_waiting([&](auto stop) {
+                            return remote_link.ckpt_restore(c->remote_id, resume, remote_keep(), missing, err, stop);
+                        })) {
                         // the link lost (the worker's end closed after the request's start looked): made again, as a
-                        // reset's is; the new connection holds no checkpoint part, so this is the missing case
-                        if (!missing && strata::net::stage_link_lost(err)) {
+                        // reset's is; the new connection holds no checkpoint part, so this is the missing case (a
+                        // STOP while waiting: remote_relink leaves it, and the request ends)
+                        if (!missing && (strata::net::stage_link_lost(err) || strata::net::stage_wait_cancelled(err))) {
                             if (!remote_relink(err)) {   // (its text starts with the link's: a 503 in the server)
-                                std::printf("ERR %s (restoring the conversation checkpoint at %lld tokens)\n",
-                                            err.c_str(), (long long) resume);
-                                std::fflush(stdout);
-                                if (remote_cancelled) continue;   // (a STOP: the link stays closed, the engine stays)
+                                if (remote_start_failed(err, " (restoring the conversation checkpoint at " +
+                                                                 std::to_string((long long) resume) + " tokens)"))
+                                    continue;
                                 return 1;
                             }
                             missing = true;
@@ -21143,9 +21179,7 @@ int main(int argc, char** argv) {
                                          err.c_str());
                         err.clear();
                         if (!session_from0(remote_roots({}))) {   // (the chain goes; the parked conversations stay)
-                            std::printf("ERR %s\n", err.c_str());
-                            std::fflush(stdout);
-                            if (remote_cancelled) continue;
+                            if (remote_start_failed(err, "")) continue;
                             return 1;
                         }
                         resume = 0;
@@ -22252,6 +22286,7 @@ int main(int argc, char** argv) {
             ver.set_history(hist_n > 0 ? d_hist : nullptr, hist_n);
             if (pipe) ver_b.set_history(hist_n > 0 ? d_hist : nullptr, hist_n);
             bool cancelled = false;
+            std::string remote_lost;
             tr("prompt start", n - 1);
             // The prompt is read in two parts when it has a turn boundary past `resume`: up to the last <|im_start|>
             // (the conversation so far), a checkpoint there, then the new turn's header.  The next request of the same
@@ -22389,6 +22424,11 @@ int main(int argc, char** argv) {
                 if (!sp_ok) {
                     if (yielded_at < 0 && (batch_fatal || !stop_req.load())) {
                         std::fprintf(stderr, "strata serve: %s\n", err.c_str());
+                        if (remote_survivable(err)) {
+                            remote_lost = err;
+                            cancelled = true;
+                            break;
+                        }
                         std::printf("ERR %s\n", err.c_str());
                         // #224: a CUDA fault (an illegal address) poisons the context for the whole process, and
                         // unwinding the destructors on it could hang until the 60 s watchdog: leave at once
@@ -22409,8 +22449,14 @@ int main(int argc, char** argv) {
                     // checkpoints above: the worker may have dropped what this side still holds)
                     if (!ckpt_why.empty() || remote_main || !checkpoint_failure_is_survivable()) {
                         // a remote stage's link lost in the middle of the request, or the worker's own error: the
-                        // engine ends as on a lost window, with the link's or the worker's text first (the server
-                        // answers it with a 503)
+                        // request ends as on a lost window (remote_survivable), else the engine ends, with the link's
+                        // or the worker's text first (the server answers it with a 503)
+                        if (ckpt_why.size() > 2 && remote_survivable(ckpt_why.substr(2))) {
+                            remote_lost = ckpt_why.substr(2) + " (saving a conversation checkpoint at " +
+                                          std::to_string(to) + " tokens)";
+                            cancelled = true;
+                            break;
+                        }
                         if (ckpt_why.size() > 2 && ckpt_why.compare(2, 12, "remote stage") == 0)
                             std::printf("ERR %s (saving a conversation checkpoint at %lld tokens)\n", ckpt_why.c_str() + 2,
                                         (long long) to);
@@ -23793,6 +23839,11 @@ int main(int argc, char** argv) {
                 exit_if_gpu_fatal("");   // (the test hook counts windows here)
                 if (!ver.run(T, window.data(), p, decode_pool_fn, win_pool_user, outv.data(), err) || drive.d.failed) {
                     exit_if_gpu_fatal(drive.d.failed && drive.d.fail ? drive.d.fail : err);
+                    if (!drive.d.failed && remote_survivable(err)) {
+                        if (aflipped) apply_pending(true);
+                        remote_lost = err;
+                        break;
+                    }
                     std::printf("ERR %s\n", drive.d.failed && drive.d.fail ? drive.d.fail : err.c_str());
                     return 1;
                 }
@@ -23868,6 +23919,10 @@ int main(int argc, char** argv) {
                 if (!ver.commit(a + 1, err)) {
                     exit_if_gpu_fatal(err);
                     if (adapt_thr.joinable()) adapt_thr.join();
+                    if (adapt_ok && remote_survivable(err)) {
+                        remote_lost = err;
+                        break;
+                    }
                     std::printf("ERR %s\n", err.c_str());
                     return 1;
                 }
@@ -24028,7 +24083,7 @@ int main(int argc, char** argv) {
             if (!keep_sync()) { std::printf("ERR %s\n", err.c_str()); return 1; }
             const double decode_ms = std::chrono::duration<double, std::milli>(Clock::now() - d0).count();
             dc_last_end = Clock::now();   // the busy run goes on when the next request starts within CostLearner::kIdleS of this
-            if (use_df2 && o.draft_auto && bandit_key != 0 && produced_n >= 48 && decode_ms > 0.0) {
+            if (use_df2 && o.draft_auto && bandit_key != 0 && produced_n >= 48 && decode_ms > 0.0 && remote_lost.empty()) {
                 DraftBandit& b = bandit[bandit_key];
                 const int w = req_df2 ? 1 : 0;
                 const double tps = 1000.0 * (double) produced_n / decode_ms;
@@ -24202,7 +24257,8 @@ int main(int argc, char** argv) {
                 // request mounts a checkpoint instead (both sides restore it) or reads from 0
                 if (remote_main && !pl_drain_err.empty()) live_ok = false;
                 if (nf_hit) live_ok = false;   // #879 (the next request's start drops the rest)
-            } else if (!nf_hit && pp_exact && pp_reached > 0 && o.prompt_cache > 0 && req_ckpt &&
+                if (!remote_lost.empty()) live_ok = false;
+            } else if (remote_lost.empty() && !nf_hit && pp_exact && pp_reached > 0 && o.prompt_cache > 0 && req_ckpt &&
                        pp_reached <= (int64_t) cur.size()) {
                 // #1620: stopped between two windows (or before the first token was read): the session is exactly at
                 // pp_reached, so it stays the live conversation - the next request continues from it or parks it.
@@ -24377,16 +24433,23 @@ int main(int argc, char** argv) {
             if (fol != nullptr && fol_rows > 0)
                 std::fprintf(stderr, "strata follow: %lld rows on the forced text, %lld of their picks were the forced token (%.2f%%)\n",
                              (long long) fol_rows, (long long) fol_same, 100.0 * (double) fol_same / (double) fol_rows);
-            if (yielded_at >= 0) std::printf("YIELDED %d %lld\n", yielded_slot, (long long) yielded_at);
-            std::printf("DONE %lld %lld %.1f %.1f %s %lld %lld %lld %lld %lld %lld %lld %.1f %lld %lld%s chunk=%lld "
-                        "experts_streamed=%lld\n",
-                        (long long) produced_n,
-                        (long long) n, prompt_ms, decode_ms, finish, (long long) draft_accepted, (long long) draft_offered,
-                        (long long) resume, (long long) req_hits, (long long) req_look,
-                        (long long) (src.ram_reads() - ram0), (long long) (src.file_reads() - files0),
-                        (double) (src.file_read_bytes() - file_bytes0) / 1e6, (long long) read_n,
-                        (long long) req_offload, chain_txt, (long long) req_chunk,
-                        (long long) (sp.chain_experts_streamed() - streamed0));
+            if (!remote_lost.empty()) {
+                remote_link.close();
+                std::fprintf(stderr, "strata serve: %s: the request ends, the engine stays and the next "
+                                     "request connects again\n", remote_lost.c_str());
+                std::printf("INFO remote_stage_kept=1\nERR %s\n", remote_lost.c_str());
+            } else {
+                if (yielded_at >= 0) std::printf("YIELDED %d %lld\n", yielded_slot, (long long) yielded_at);
+                std::printf("DONE %lld %lld %.1f %.1f %s %lld %lld %lld %lld %lld %lld %lld %.1f %lld %lld%s chunk=%lld "
+                            "experts_streamed=%lld\n",
+                            (long long) produced_n,
+                            (long long) n, prompt_ms, decode_ms, finish, (long long) draft_accepted, (long long) draft_offered,
+                            (long long) resume, (long long) req_hits, (long long) req_look,
+                            (long long) (src.ram_reads() - ram0), (long long) (src.file_reads() - files0),
+                            (double) (src.file_read_bytes() - file_bytes0) / 1e6, (long long) read_n,
+                            (long long) req_offload, chain_txt, (long long) req_chunk,
+                            (long long) (sp.chain_experts_streamed() - streamed0));
+            }
             std::fflush(stdout);
             if (admit_slot >= 0) {   // --batch: BADM <slot> <1 = continues in the batch windows | 0 = done>
                 bool cont = !cancelled && produced_n == 1 && admit_max_new > 1 && std::strcmp(finish, "length") == 0 &&

@@ -747,6 +747,11 @@ bool stage_link_lost(const std::string& err) {
 
 bool stage_wait_cancelled(const std::string& err) { return err == kCancelled; }
 
+bool stage_resumes(const StageHello& main, const StageHello& worker) {
+    return (main.row_formats & worker.row_formats & kStageCapResume) != 0 && main.instance != 0 &&
+           worker.instance == main.instance;
+}
+
 // ------------------------------------------------------------------------------------------------ StageClient
 
 StageClient::~StageClient() { close(); }
@@ -1106,7 +1111,7 @@ bool StageClient::prefill_recv(float* rows_out, size_t row_floats, int64_t T, in
 }
 
 bool StageClient::keep_call_(StageMsg type, StageMsg want, int64_t a, int64_t b, const std::vector<int64_t>& keep,
-                             int64_t& reply_a, std::string& err) {
+                             int64_t& reply_a, std::string& err, const std::atomic<bool>* stop) {
     std::lock_guard<std::mutex> ls(send_mu_);
     std::lock_guard<std::mutex> lr(recv_mu_);
     if (!connected()) { err = "remote stage: not connected"; return false; }
@@ -1119,12 +1124,20 @@ bool StageClient::keep_call_(StageMsg type, StageMsg want, int64_t a, int64_t b,
     // a Reset is counted as before checkpoints (in `resets`, not in bytes_out); the checkpoint messages' bytes are
     if (type == StageMsg::Reset) ++stats_.resets;
     else stats_.bytes_out += sizeof h + h.bytes;
+    if (stop != nullptr && !tls_->buffered()) {
+        const strata::core::LinkCall call;
+        if (!wait_readable(S(fd_), Clock::now() + std::chrono::seconds(io_timeout_s()), stop, err)) {
+            if (!stage_wait_cancelled(err)) err = "remote stage: receive failed: timed out";
+            break_();
+            return false;
+        }
+    }
     return read_reply_(want, nullptr, 0, reply_a, err);
 }
 
-bool StageClient::reset(const std::vector<int64_t>& keep, std::string& err) {
+bool StageClient::reset(const std::vector<int64_t>& keep, std::string& err, const std::atomic<bool>* stop) {
     int64_t a = 0;
-    return keep_call_(StageMsg::Reset, StageMsg::ResetOk, 0, 0, keep, a, err);
+    return keep_call_(StageMsg::Reset, StageMsg::ResetOk, 0, 0, keep, a, err, stop);
 }
 
 bool StageClient::ckpt_save(int64_t id, int64_t L, const std::vector<int64_t>& keep, bool& stored, std::string& err) {
@@ -1136,10 +1149,10 @@ bool StageClient::ckpt_save(int64_t id, int64_t L, const std::vector<int64_t>& k
 }
 
 bool StageClient::ckpt_restore(int64_t id, int64_t L, const std::vector<int64_t>& keep, bool& missing,
-                               std::string& err) {
+                               std::string& err, const std::atomic<bool>* stop) {
     int64_t a = 0;
     missing = false;
-    if (keep_call_(StageMsg::CkptRestore, StageMsg::CkptRestoreOk, id, L, keep, a, err)) return true;
+    if (keep_call_(StageMsg::CkptRestore, StageMsg::CkptRestoreOk, id, L, keep, a, err, stop)) return true;
     // the worker's own text (read_reply_'s prefix, then the fixed start) - a relay's forwarded error is not this
     missing = connected() && err.rfind(std::string("remote stage (worker): ") + kStageCkptMissing, 0) == 0;
     return false;
@@ -1154,10 +1167,10 @@ bool StageClient::park_save(int64_t id, int64_t L, const std::vector<int64_t>& k
 }
 
 bool StageClient::park_restore(int64_t id, int64_t L, const std::vector<int64_t>& keep, bool& missing,
-                               std::string& err) {
+                               std::string& err, const std::atomic<bool>* stop) {
     int64_t a = 0;
     missing = false;
-    if (keep_call_(StageMsg::ParkRestore, StageMsg::ParkRestoreOk, id, L, keep, a, err)) return true;
+    if (keep_call_(StageMsg::ParkRestore, StageMsg::ParkRestoreOk, id, L, keep, a, err, stop)) return true;
     // the worker's own text, as for a checkpoint (ckpt_restore)
     missing = connected() && err.rfind(std::string("remote stage (worker): ") + kStageCkptMissing, 0) == 0;
     return false;
@@ -1439,6 +1452,7 @@ int serve_stage(const std::string& bind_addr, int port, std::shared_ptr<TlsCrede
     std::unique_ptr<Peer> next_peer;
     std::string next_host;
     Inbox first;
+    uint64_t last_main = 0;
     while (stop == nullptr || !*stop) {
         std::unique_ptr<Peer> served = std::move(next_peer);
         std::string host = next_host;
@@ -1838,6 +1852,17 @@ int serve_stage(const std::string& bind_addr, int port, std::shared_ptr<TlsCrede
                     (void) reply_error(r);
                     keep = false;
                     break;
+                }
+                if (h.new_main) {
+                    const uint64_t main_id = (in.hello.row_formats & kStageCapResume) != 0 ? in.hello.instance : 0;
+                    const bool same = main_id != 0 && main_id == last_main;
+                    if (!same) h.new_main();
+                    last_main = main_id;
+                    mine.row_formats |= kStageCapResume;
+                    mine.instance = same ? main_id : 0;
+                    if (same)
+                        std::fprintf(stderr, "strata stage worker: %s is the main process served before: its "
+                                     "checkpoint parts are kept\n", host.c_str());
                 }
                 mine.row_formats |= kStageRowsAll | kStageCapStreamRows;   // (the conversions are this link's own)
                 mine.stream_rows = (uint64_t) kStageRowsAll * (1u | 1ull << 16 | 1ull << 32);

@@ -22,6 +22,7 @@
   "chat.newToastText": "Celle où vous étiez est dans la liste à gauche.",
   "chat.projectionOff": "projection désactivée",
   "chat.projectionOn": "projection activée",
+  "chat.recovering": "système tombé - reprise en cours...",
   "chat.stopped": "Arrêtée",
   "chat.stoppedLower": "arrêtée",
   "chat.tokens": {"one": "{n} token", "other": "{n} tokens"},
